@@ -82,7 +82,7 @@ class ProjectStore:
 
     def __init__(self, output_dir: Path, source: str):
         self.output_dir = Path(output_dir).expanduser().resolve()
-        self.project_id = source_key(source)
+        self.project_id = source_key(source, self.output_dir)
         self.root = self.output_dir / ".anime_dubber_project"
         self.manifest_path = self.root / "projects" / f"{self.project_id}.json"
         self.log_path = self.root / "logs" / f"{self.project_id}.log"
