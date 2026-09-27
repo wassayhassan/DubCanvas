@@ -37,10 +37,7 @@ struct NewDubView: View {
             VStack(alignment: .leading, spacing: 24) {
                 header
                 identitySection
-                if state.outputMode == .dub {
-                    Text("Automatic transcription, translation, character voices, subtitle correction, and timing are enabled. You can change how they work below.")
-                        .foregroundStyle(.secondary)
-                }
+                if state.outputMode == .dub { automaticSetup }
                 DisclosureGroup("Advanced processing settings", isExpanded: $pipelineExpanded) {
                     pipelineSection
                 }
@@ -115,12 +112,20 @@ struct NewDubView: View {
                 }
             }
             .padding(.top, 4)
-            if state.outputMode == .dub {
-                Divider().padding(.vertical, 10)
-                Label("Automatic setup: detect source speech, review subtitles, match speakers, preserve background audio and generate target voices. Provider overrides are below.", systemImage: "sparkles")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+        }
+    }
+
+    private var automaticSetup: some View {
+        GroupBox("Automatic setup") {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Detect speech and reuse this project's transcript, speakers and source subtitles when available.", systemImage: "text.bubble")
+                Label("Translate and review subtitles automatically; choose voices for the target language.", systemImage: "waveform")
+                Label("Preserve background audio and keep generated lines aligned to source timing.", systemImage: "film.stack")
+                Text("This version gets its own translation, voice choices and output. Model and voice overrides are below.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
         }
     }
 
@@ -333,7 +338,7 @@ struct NewDubView: View {
                 .disabled(!state.canStartJob)
             }
 
-            Button(state.outputMode == .subtitles ? "Generate Subtitles" : "Generate Dub") {
+            Button(state.outputMode == .subtitles ? "Generate Subtitles" : "Create Dub") {
                 state.startJob(analysis: false)
             }
             .buttonStyle(.borderedProminent)
