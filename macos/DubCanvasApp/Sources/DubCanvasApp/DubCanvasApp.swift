@@ -30,7 +30,7 @@ struct DubCanvasApp: App {
         }
 
         WindowGroup("Project Workspace", id: "workspace", for: WorkspaceRequest.self) { request in
-            WorkspaceWindow(request: request.wrappedValue)
+            WorkspaceWindow(request: request)
                 .frame(minWidth: 940, minHeight: 650)
         }
         .defaultSize(width: 1180, height: 780)
@@ -47,7 +47,7 @@ struct DubCanvasApp: App {
 }
 
 private struct WorkspaceWindow: View {
-    let request: WorkspaceRequest?
+    @Binding var request: WorkspaceRequest?
     @StateObject private var state = AppState()
     @State private var initialized = false
     @State private var openedProject = false
@@ -70,6 +70,11 @@ private struct WorkspaceWindow: View {
                 }
             }
             .onReceive(state.$projects) { projects in
+                if request?.projectID == nil,
+                   let project = projects.first(where: { $0.id == state.selectedProjectID }) {
+                    openedProject = true
+                    request = .existing(project)
+                }
                 guard !openedProject, let projectID = request?.projectID,
                       let project = projects.first(where: { $0.id == projectID }) else { return }
                 openedProject = true
