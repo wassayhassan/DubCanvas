@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ProjectsView: View {
@@ -46,6 +47,9 @@ struct ProjectsView: View {
         .task { state.refreshProjects() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { state.refreshProjects() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            state.refreshProjects()
         }
         .sheet(isPresented: $state.showingSystemCheck) {
             SystemCheckSheet().environmentObject(state)
