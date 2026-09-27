@@ -968,6 +968,10 @@ def transcribe_audio(
     else:
         raise PipelineError(f"Unsupported ASR provider: {provider}")
 
+    if not any(str(row.get("text", "")).strip() for row in provider_rows):
+        progress("Speech recognition returned no speech segments for this audio track")
+        return []
+
     if task == "transcribe" and config.source_language == "auto":
         if not detected_language or detected_language == "auto":
             raise PipelineError("Could not detect the source language. Set the source language explicitly and retry.")
@@ -2083,6 +2087,24 @@ def _version_profiles(profiles, overrides: Dict[str, Dict[str, str]]) -> Dict[st
     return result
 
 
+def transcribe_source_audio(
+    dialogue: Path, original: Path, config: Config, work: Path,
+    runner: CommandRunner, progress: ProgressCallback,
+) -> Tuple[List[Segment], Path]:
+    requested_language = config.source_language
+    segments = transcribe_audio(dialogue, config, work, runner, progress, task="transcribe")
+    if not segments and dialogue != original:
+        progress("No speech found in separated dialogue; retrying the original soundtrack automatically…")
+        # A language guess made from an empty stem must not constrain the retry.
+        config.source_language = requested_language
+        fallback_work = work / "original_soundtrack_asr"
+        fallback_work.mkdir(parents=True, exist_ok=True)
+        segments = transcribe_audio(original, config, fallback_work, runner, progress, task="transcribe")
+        dialogue = original
+    progress(f"Recognized {len(segments)} source speech segments")
+    return segments, dialogue
+
+
 def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
     progress = progress or print
     runner = runner or CommandRunner(progress)
@@ -2092,7 +2114,7 @@ def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, ru
     video = download_source(config.source, work, runner, progress)
     audio = extract_audio(video, work, runner, progress, config)
     vocals, _background = separate_dialogue(audio, work, runner, progress, config)
-    segments = transcribe_audio(vocals, config, work, runner, progress, task="transcribe")
+    segments, _ = transcribe_source_audio(vocals, audio, config, work, runner, progress)
     if not segments:
         raise PipelineError("No speech segments were detected after dialogue separation.")
     zh_srt = out / f"{key}_{config.source_language}.srt"; write_srt(segments, zh_srt, translated=False)
@@ -2140,9 +2162,9 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         background = audio
         transcript_audio = audio
 
-    zh_segments = transcribe_audio(transcript_audio, config, work, runner, progress, task="transcribe")
+    zh_segments, transcript_audio = transcribe_source_audio(transcript_audio, audio, config, work, runner, progress)
     if not zh_segments:
-        raise PipelineError("No speech segments were detected. Try the original soundtrack, a different source, or --force to rebuild cached separation.")
+        raise PipelineError("No speech was recognized in the original soundtrack. Check that the source video has audible dialogue; no dub or empty subtitle file was produced.")
     source_kind = "chinese" if config.source_language == "zh" else "source"
     zh_srt = out / f"{key}_{config.source_language}.srt"
     write_srt(zh_segments, zh_srt, translated=False)
