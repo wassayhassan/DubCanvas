@@ -12,6 +12,23 @@ from anime_dubber.core import source_key
 
 
 class ProjectStoreTests(unittest.TestCase):
+    def test_project_names_are_required_unique_and_can_be_renamed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = ProjectStore(root, "https://youtu.be/first")
+            second = ProjectStore(root, "https://youtu.be/second")
+            with self.assertRaisesRegex(ValueError, "Project name is required"):
+                first.create(source="https://youtu.be/first", name="  ")
+            first.create(source="https://youtu.be/first", name="Episode One")
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                second.create(source="https://youtu.be/second", name=" episode   one ")
+            second.create(source="https://youtu.be/second", name="Episode Two")
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                second.rename("EPISODE ONE", "")
+            with self.assertRaisesRegex(ValueError, "Project name is required"):
+                first.rename("", "")
+            self.assertEqual(first.rename("Episode 1", "")["name"], "Episode 1")
+
     def test_local_files_with_same_name_get_separate_projects_and_work_keys(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -30,7 +47,7 @@ class ProjectStoreTests(unittest.TestCase):
             self.assertEqual(source_key(str(first), output), project_a["project_id"])
             self.assertEqual(source_key(str(second), output), project_b["project_id"])
             self.assertEqual(len(service.list_projects(str(output))), 2)
-            self.assertEqual(service.create_project(str(output), str(second))["name"], "Second")
+            self.assertEqual(service.create_project(str(output), str(second), "Second")["name"], "Second")
 
             first.unlink()
             self.assertEqual(ProjectStore(output, str(first)).project_id, "episode")
@@ -39,7 +56,7 @@ class ProjectStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             store = ProjectStore(out, "source.mp4")
-            store.create(source="source.mp4")
+            store.create(source="source.mp4", name="Source project")
             source_srt = out / "source.srt"
             source_srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
             store.begin(job_id="job_1", kind="run", config={"source": "source.mp4"}, dub_id="dub_1")

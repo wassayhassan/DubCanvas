@@ -108,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     create = sub.add_parser("new-project", help="Register a source video before processing")
     create.add_argument("source")
     create.add_argument("-o", "--output", default=default_output_dir())
-    create.add_argument("--name", default="")
+    create.add_argument("--name", required=True, help="Unique project name")
     create.add_argument("--series-id", default="")
     retry = sub.add_parser("resume-dub", help="Resume a paused or failed dub in place")
     retry.add_argument("project_id")

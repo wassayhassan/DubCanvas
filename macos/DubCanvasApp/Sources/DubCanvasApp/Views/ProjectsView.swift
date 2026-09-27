@@ -4,70 +4,121 @@ struct ProjectsView: View {
     @EnvironmentObject private var state: AppState
     @State private var search = ""
 
-    private var visibleProjects: [ProjectSummary] {
-        guard !search.isEmpty else { return state.projects }
-        return state.projects.filter {
+    private var recentProjects: [ProjectSummary] {
+        let sorted = state.projects.sorted { $0.updatedAt > $1.updatedAt }
+        guard !search.isEmpty else { return sorted }
+        return sorted.filter {
             $0.displayName.localizedCaseInsensitiveContains(search) ||
             $0.source.localizedCaseInsensitiveContains(search)
         }
     }
 
     var body: some View {
-        Group {
-            if state.projects.isEmpty {
-                ContentUnavailableView {
-                    Label("No Projects Yet", systemImage: "square.stack.3d.up")
-                } description: {
-                    Text("Add a source video to a project, then create as many dub versions as you need.")
-                } actions: {
-                    Button("New Project") { state.newProject() }
-                        .buttonStyle(.borderedProminent)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 26) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Welcome to DubCanvas")
+                        .font(.largeTitle.bold())
+                    Text("Keep one source and its analysis together. Create as many dub versions as you need inside the project.")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            } else {
-                VStack(spacing: 0) {
-                    Table(visibleProjects, selection: $state.selectedProjectID) {
-                        TableColumn("Project") { project in
-                            HStack(spacing: 12) {
-                                Image(systemName: "folder.fill").foregroundStyle(.tint)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(project.displayName).fontWeight(.medium)
-                                    Text(project.source).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                            }.padding(.vertical, 6)
-                        }
-                        TableColumn("Dubs") { project in
-                            Text("\(project.dubs.count)").monospacedDigit()
-                        }.width(65)
-                        TableColumn("Subtitles") { project in
-                            Text("\(project.subtitles.count)").monospacedDigit()
-                        }.width(90)
-                        TableColumn("Status") { project in
-                            Label(project.statusLabel, systemImage: project.status == "completed" ? "checkmark.circle" : project.status == "running" ? "hourglass" : "circle")
-                        }.width(110)
-                    }
-                    HStack {
-                        Text("Open a project to see its source analysis, subtitles and dub versions.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Open Project") {
-                            if let project = state.currentProject { state.openProject(project) }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(state.currentProject == nil)
-                    }.padding(16)
+
+                HStack(alignment: .top, spacing: 24) {
+                    newProjectCard
+                        .frame(minWidth: 250, maxWidth: 330)
+                    recentProjectsCard
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
+            .frame(maxWidth: 1050, alignment: .leading)
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
         .navigationTitle("Projects")
-        .searchable(text: $search, prompt: "Search projects by name or source")
         .toolbar {
-            Button { state.newProject() } label: {
-                Label("New Project", systemImage: "folder.badge.plus")
-            }
             Button { state.refreshProjects() } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Label("Refresh Projects", systemImage: "arrow.clockwise")
             }
         }
         .task { state.refreshProjects() }
+    }
+
+    private var newProjectCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 16) {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+                Text("Start a new project")
+                    .font(.title2.bold())
+                Text("Add a video once. Its transcript, speakers and source subtitles stay together for every dub.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Create New Project", systemImage: "plus") { state.newProject() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+        }
+    }
+
+    private var recentProjectsCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text("Recent projects")
+                        .font(.title2.bold())
+                    Spacer()
+                    Text("\(state.projects.count)")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                TextField("Search by project name or source", text: $search)
+                    .textFieldStyle(.roundedBorder)
+
+                if recentProjects.isEmpty {
+                    ContentUnavailableView {
+                        Label(search.isEmpty ? "No projects yet" : "No matching projects", systemImage: "folder")
+                    } description: {
+                        Text(search.isEmpty ? "Create a project to keep your video and dub versions together." : "Try a different name or source.")
+                    }
+                    .frame(minHeight: 230)
+                } else {
+                    LazyVStack(spacing: 8) {
+                        ForEach(recentProjects) { project in
+                            Button { state.openProject(project) } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "folder.fill")
+                                        .font(.title3).foregroundStyle(.tint)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(project.displayName).fontWeight(.semibold)
+                                            .foregroundStyle(.primary)
+                                        Text("\(project.dubs.count) dubs · \(project.statusLabel) · \(project.updatedAt.prefix(10))")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        Text(project.source)
+                                            .font(.caption).foregroundStyle(.secondary)
+                                            .lineLimit(1).truncationMode(.middle)
+                                    }
+                                    Spacer(minLength: 8)
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Open \(project.displayName)")
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+        }
     }
 }

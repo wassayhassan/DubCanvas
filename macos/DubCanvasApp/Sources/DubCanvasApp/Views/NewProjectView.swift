@@ -47,7 +47,7 @@ struct NewProjectView: View {
 
                 HStack(alignment: .center, spacing: 16) {
                     Button("Create Project Only") { state.createProject() }
-                        .disabled(!hasSource)
+                        .disabled(!hasSource || state.projectNameProblem() != nil)
                         .help("Save the source without starting analysis or dubbing")
                     Spacer()
                     Button("Create Project & Dub") { state.quickStart() }
@@ -141,6 +141,10 @@ struct NewProjectView: View {
                     Text("Project name").fontWeight(.medium)
                     TextField("For example, Episode 1", text: $state.projectName)
                         .textFieldStyle(.roundedBorder)
+                    if let issue = state.projectNameProblem() {
+                        Label(issue, systemImage: "exclamationmark.circle")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("First dub language").fontWeight(.medium)
