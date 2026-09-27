@@ -94,18 +94,44 @@ class ProjectStore:
         except Exception:
             return {}
 
+    def _validated_name(self, name: str) -> str:
+        value = name.strip()
+        if not value:
+            raise ValueError("Project name is required")
+        key = " ".join(value.split()).casefold()
+        for path in (self.root / "projects").glob("*.json"):
+            if path == self.manifest_path:
+                continue
+            try:
+                other = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(other, dict) and " ".join(str(other.get("name") or "").split()).casefold() == key:
+                raise ValueError(f'A project named "{value}" already exists. Choose a different name.')
+        return value
+
+    def _default_name(self, source: str) -> str:
+        title = Path(source).stem.strip() or "Video"
+        try:
+            return self._validated_name(title)
+        except ValueError:
+            return self._validated_name(f"{title} ({self.project_id[-8:]})")
+
     def create(self, *, source: str, name: str = "", series_id: str = "") -> dict:
         if not source.strip():
             raise ValueError("source is required")
+        name = self._validated_name(name)
         old = self.load()
         if old:
             if old.get("source") and old["source"] != source:
                 raise ValueError("A project with this ID already has a different source")
-            return old
+            if old.get("name") and old["name"] != name:
+                raise ValueError(f'This source already belongs to the project "{old["name"]}". Open that project instead.')
+            return old if old.get("name") else self.rename(name, series_id)
         now = _now()
         data = {
             "schema_version": 2, "project_id": self.project_id,
-            "source": source, "name": name.strip(), "series_id": series_id,
+            "source": source, "name": name, "series_id": series_id,
             "output_dir": str(self.output_dir), "status": "ready", "stage": "ready",
             "stage_title": "Ready", "progress": None, "active_job_id": None,
             "created_at": now, "updated_at": now, "config": {},
@@ -120,7 +146,7 @@ class ProjectStore:
         payload = self.load()
         if not payload:
             raise FileNotFoundError(self.project_id)
-        payload["name"] = name.strip()
+        payload["name"] = self._validated_name(name)
         payload["series_id"] = series_id.strip()
         payload["updated_at"] = _now()
         _atomic_write(self.manifest_path, payload)
@@ -146,7 +172,7 @@ class ProjectStore:
             "project_id": self.project_id,
             "source": str(config.get("source") or ""),
             "series_id": str(config.get("series_id") or old.get("series_id") or ""),
-            "name": old.get("name") or "",
+            "name": old.get("name") or self._default_name(str(config.get("source") or "")),
             "output_dir": str(self.output_dir),
             "status": "running",
             "stage": "preparing",
