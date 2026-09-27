@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from anime_dubber.application.service import config_from_dict
 from anime_dubber.cli import build_parser
-from anime_dubber.core import CommandRunner, Config, transcribe_audio
+from anime_dubber.core import CommandRunner, Config, transcribe_audio, transcribe_source_audio
 from anime_dubber.providers.asr import resolve_asr_provider
 from anime_dubber.providers.translation import ollama_generate
 from anime_dubber.providers.tts import (
@@ -22,6 +22,38 @@ from anime_dubber.providers.tts import (
 
 
 class CrossPlatformProviderTests(unittest.TestCase):
+    def test_empty_dialogue_stem_retries_original_without_reusing_its_language_guess(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg = Config(source="video.mp4", output_dir=root, source_language="auto",
+                         asr_provider="faster-whisper")
+            calls = []
+            def recognize(audio, **kwargs):
+                calls.append(audio)
+                self.assertIsNone(kwargs["language"])
+                if audio.name == "vocals.wav":
+                    return []
+                kwargs["language_sink"]("zh")
+                return [{"start": 0, "end": 1, "text": "你好"}]
+            with patch("anime_dubber.providers.asr.faster_whisper_segments", side_effect=recognize):
+                segments, selected = transcribe_source_audio(root / "vocals.wav", root / "original.wav",
+                    cfg, root, CommandRunner(), lambda _: None)
+            self.assertEqual([p.name for p in calls], ["vocals.wav", "original.wav"])
+            self.assertEqual((segments[0].text, cfg.source_language, selected.name), ("你好", "zh", "original.wav"))
+            self.assertTrue((root / "original_soundtrack_asr" / "detected_source_language.json").exists())
+
+    def test_empty_original_track_stays_empty_without_inventing_subtitles(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg = Config(source="video.mp4", output_dir=root, source_language="auto",
+                         asr_provider="faster-whisper")
+            with patch("anime_dubber.providers.asr.faster_whisper_segments", return_value=[]) as recognize:
+                segments, selected = transcribe_source_audio(root / "vocals.wav", root / "original.wav",
+                    cfg, root, CommandRunner(), lambda _: None)
+            self.assertEqual(segments, [])
+            self.assertEqual(recognize.call_count, 2)
+            self.assertEqual(selected.name, "original.wav")
+
     def test_auto_source_detection_uses_provider_language(self):
         with tempfile.TemporaryDirectory() as td:
             cfg = config_from_dict({"source": "input.mp4", "output_dir": td,
