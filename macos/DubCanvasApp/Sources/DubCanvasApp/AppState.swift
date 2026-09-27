@@ -313,7 +313,21 @@ final class AppState: ObservableObject {
         return false
     }
 
+    func projectNameProblem(excluding projectID: String? = nil) -> String? {
+        let name = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return "Enter a project name." }
+        let normalized = name.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
+        if projects.contains(where: {
+            $0.id != projectID &&
+            $0.name.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased() == normalized
+        }) {
+            return "A project with this name already exists. Choose a different name."
+        }
+        return nil
+    }
+
     var quickStartProblem: String? {
+        if let issue = projectNameProblem() { return issue }
         let input = source.trimmingCharacters(in: .whitespacesAndNewlines)
         if input.isEmpty { return "Choose a video file or paste a video page link." }
         if let url = URL(string: input), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
@@ -535,6 +549,10 @@ final class AppState: ObservableObject {
     }
 
     func createProject() {
+        if let issue = projectNameProblem() {
+            jobIssue = issue
+            return
+        }
         guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             statusText = "Choose a source video first."
             return
@@ -553,6 +571,11 @@ final class AppState: ObservableObject {
 
     func saveProjectSettings() {
         guard let project = currentProject else { return }
+        if let issue = projectNameProblem(excluding: project.id) {
+            jobIssue = issue
+            return
+        }
+        jobIssue = ""
         do {
             _ = try backend.send(method: "update_project", params: [
                 "project_id": project.id, "output_dir": project.outputDir,
@@ -838,6 +861,8 @@ final class AppState: ObservableObject {
             statusText = message
             if id.hasPrefix("quick-") || (pendingQuickStart && id.hasPrefix("create-project-")) {
                 failQuickStart(message)
+            } else if id.hasPrefix("create-project-") || id.hasPrefix("update-project-") {
+                jobIssue = message
             } else if id.hasPrefix("projects-") && pendingQuickStart {
                 failQuickStart("Could not load the new project: \(message)")
             } else if id.hasPrefix("run-") || id.hasPrefix("resume-") || id.hasPrefix("analyze-") {
@@ -990,6 +1015,7 @@ final class AppState: ObservableObject {
                     resumeDub(dub)
                 }
             } else if id.hasPrefix("create-project-") {
+                jobIssue = ""
                 selectedProjectID = result["project_id"] as? String
                 if id.hasPrefix("create-project-quick-") {
                     pendingQuickProjectID = selectedProjectID
@@ -1004,6 +1030,7 @@ final class AppState: ObservableObject {
                 }
                 refreshProjects()
             } else if id.hasPrefix("update-project-") {
+                jobIssue = ""
                 statusText = "Project saved"
                 refreshProjects()
             } else if id.hasPrefix("delete-dub-") {
