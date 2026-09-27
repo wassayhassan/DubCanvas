@@ -25,8 +25,7 @@ struct NewProjectView: View {
                 }
 
                 sourceSection
-                nameSection
-                languageSection
+                identitySection
                 detailsSection
 
                 if !state.jobIssue.isEmpty {
@@ -47,7 +46,7 @@ struct NewProjectView: View {
                 }
 
                 HStack(alignment: .center, spacing: 16) {
-                    Button("Save Project Only") { state.createProject() }
+                    Button("Create Project Only") { state.createProject() }
                         .disabled(!hasSource)
                         .help("Save the source without starting analysis or dubbing")
                     Spacer()
@@ -67,6 +66,12 @@ struct NewProjectView: View {
             .frame(maxWidth: .infinity, alignment: .top)
         }
         .navigationTitle("New Project")
+        .onChange(of: state.source) { _, source in
+            guard state.projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  source.hasPrefix("/") else { return }
+            state.projectName = URL(fileURLWithPath: source).deletingPathExtension().lastPathComponent
+                .replacingOccurrences(of: "_", with: " ")
+        }
     }
 
     private var sourceSection: some View {
@@ -128,51 +133,43 @@ struct NewProjectView: View {
         }
     }
 
-    private var nameSection: some View {
+    private var identitySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("2", "Project name")
+            sectionTitle("2", "Name and target")
             GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Project name").fontWeight(.medium)
                     TextField("For example, Episode 1", text: $state.projectName)
                         .textFieldStyle(.roundedBorder)
-                    Text("Give this video a name you'll recognize when you return to your projects.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("First dub language").fontWeight(.medium)
+                            Text("The source language is detected automatically.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Picker("First dub language", selection: $state.targetLanguage) {
+                            Text("English").tag("en")
+                            Text("Spanish").tag("es")
+                            Text("French").tag("fr")
+                            Text("German").tag("de")
+                            Text("Japanese").tag("ja")
+                            Text("Korean").tag("ko")
+                            Text("Chinese").tag("zh")
+                            Text("Portuguese").tag("pt")
+                            Text("Italian").tag("it")
+                            Text("Hindi").tag("hi")
+                            Text("Arabic").tag("ar")
+                        }
+                        .labelsHidden().frame(width: 165)
+                    }
+                    if !state.outputFolder.isEmpty {
+                        Label("Stored in: \(state.outputFolder)", systemImage: "folder")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-            }
-        }
-    }
-
-    private var languageSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("3", "First dub")
-            GroupBox {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Dub language").fontWeight(.medium)
-                        Text("The source language is detected automatically.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Picker("Dub language", selection: $state.targetLanguage) {
-                        Text("English").tag("en")
-                        Text("Spanish").tag("es")
-                        Text("French").tag("fr")
-                        Text("German").tag("de")
-                        Text("Japanese").tag("ja")
-                        Text("Korean").tag("ko")
-                        Text("Chinese").tag("zh")
-                        Text("Portuguese").tag("pt")
-                        Text("Italian").tag("it")
-                        Text("Hindi").tag("hi")
-                        Text("Arabic").tag("ar")
-                    }
-                    .labelsHidden()
-                    .frame(width: 165)
-                }
                 .padding(8)
             }
         }
