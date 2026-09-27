@@ -25,6 +25,7 @@ struct NewProjectView: View {
                 }
 
                 sourceSection
+                nameSection
                 languageSection
                 detailsSection
 
@@ -127,9 +128,26 @@ struct NewProjectView: View {
         }
     }
 
+    private var nameSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("2", "Project name")
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("For example, Episode 1", text: $state.projectName)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Give this video a name you'll recognize when you return to your projects.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+            }
+        }
+    }
+
     private var languageSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("2", "First dub")
+            sectionTitle("3", "First dub")
             GroupBox {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
@@ -161,9 +179,8 @@ struct NewProjectView: View {
     }
 
     private var detailsSection: some View {
-        DisclosureGroup("Project details", isExpanded: $detailsExpanded) {
+        DisclosureGroup("Advanced project settings", isExpanded: $detailsExpanded) {
             VStack(alignment: .leading, spacing: 12) {
-                labeledField("Project name", placeholder: "Optional", text: $state.projectName)
                 labeledField("Series identifier", placeholder: "Optional", text: $state.seriesID)
                 HStack(alignment: .bottom, spacing: 10) {
                     labeledField("Output folder", placeholder: "Choose a folder", text: $state.outputFolder)
