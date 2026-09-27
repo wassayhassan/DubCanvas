@@ -2,6 +2,15 @@ import SwiftUI
 
 struct ProjectsView: View {
     @EnvironmentObject private var state: AppState
+    @State private var search = ""
+
+    private var visibleProjects: [ProjectSummary] {
+        guard !search.isEmpty else { return state.projects }
+        return state.projects.filter {
+            $0.displayName.localizedCaseInsensitiveContains(search) ||
+            $0.source.localizedCaseInsensitiveContains(search)
+        }
+    }
 
     var body: some View {
         Group {
@@ -16,12 +25,15 @@ struct ProjectsView: View {
                 }
             } else {
                 VStack(spacing: 0) {
-                    Table(state.projects, selection: $state.selectedProjectID) {
+                    Table(visibleProjects, selection: $state.selectedProjectID) {
                         TableColumn("Project") { project in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(project.displayName).fontWeight(.medium)
-                                Text(project.source).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }.padding(.vertical, 4)
+                            HStack(spacing: 12) {
+                                Image(systemName: "folder.fill").foregroundStyle(.tint)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(project.displayName).fontWeight(.medium)
+                                    Text(project.source).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }.padding(.vertical, 6)
                         }
                         TableColumn("Dubs") { project in
                             Text("\(project.dubs.count)").monospacedDigit()
@@ -30,7 +42,7 @@ struct ProjectsView: View {
                             Text("\(project.subtitles.count)").monospacedDigit()
                         }.width(90)
                         TableColumn("Status") { project in
-                            Text(project.statusLabel)
+                            Label(project.statusLabel, systemImage: project.status == "completed" ? "checkmark.circle" : project.status == "running" ? "hourglass" : "circle")
                         }.width(110)
                     }
                     HStack {
@@ -47,6 +59,7 @@ struct ProjectsView: View {
             }
         }
         .navigationTitle("Projects")
+        .searchable(text: $search, prompt: "Search projects by name or source")
         .toolbar {
             Button { state.newProject() } label: {
                 Label("New Project", systemImage: "folder.badge.plus")
