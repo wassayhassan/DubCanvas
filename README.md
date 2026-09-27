@@ -7,8 +7,8 @@ DubCanvas creates subtitles and multilingual dubs for videos. The macOS app orga
 Requires an Apple silicon Mac running macOS 14 or later. Install FFmpeg if setup asks for it, then run:
 
 ```bash
-git clone https://github.com/wassayhassan/AnimeDubberMac.git
-cd AnimeDubberMac
+git clone https://github.com/wassayhassan/DubCanvas.git
+cd DubCanvas
 zsh setup.sh
 ```
 
