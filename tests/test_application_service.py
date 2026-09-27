@@ -14,6 +14,26 @@ from anime_dubber.core import ReviewRequired
 
 
 class ApplicationServiceTests(unittest.TestCase):
+    def test_macos_system_check_uses_reported_multilingual_availability(self):
+        service = ApplicationService()
+        caps = {
+            "providers": {
+                "asr": {"mlx_whisper": True},
+                "tts": {"chatterbox": True, "chatterbox_multilingual": False,
+                        "kokoro": True, "macos": True},
+                "stems": {"demucs": True},
+            }
+        }
+        with patch("anime_dubber.application.service.platform.system", return_value="Darwin"), \
+             patch.object(service, "capabilities", return_value=caps), \
+             patch("anime_dubber.application.service.shutil.which", return_value="/usr/bin/tool"), \
+             patch("anime_dubber.application.service._module_available", return_value=True):
+            for available in (False, True):
+                caps["providers"]["tts"]["chatterbox_multilingual"] = available
+                checks = service.system_check()["checks"]
+                multilingual = next(check for check in checks if check["name"] == "Chatterbox Multilingual")
+                self.assertEqual(multilingual["ok"], available)
+
     def test_new_jobs_default_to_automatic_review_and_stronger_local_models(self):
         cfg = config_from_dict({"source": "example.mp4", "output_dir": "/tmp/anime-review"})
         self.assertTrue(cfg.review_before_dub)

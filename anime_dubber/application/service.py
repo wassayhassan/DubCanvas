@@ -264,8 +264,8 @@ class ApplicationService:
             })
             checks.append({
                 "name": "Chatterbox Multilingual",
-                "ok": multilingual_ok,
-                "detail": "available" if multilingual_ok else "optional; run macos/install_voice_engines.sh",
+                "ok": bool(caps["providers"]["tts"]["chatterbox_multilingual"]),
+                "detail": "available" if caps["providers"]["tts"]["chatterbox_multilingual"] else "optional; run macos/install_voice_engines.sh",
                 "optional": True,
             })
             checks.append({
