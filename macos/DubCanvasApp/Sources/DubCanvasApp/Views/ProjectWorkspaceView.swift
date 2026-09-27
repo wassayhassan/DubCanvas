@@ -36,6 +36,9 @@ struct ProjectWorkspaceView: View {
             sourcePlayer?.pause()
             if let project = state.currentProject { loadSource(project) }
         }
+        .onChange(of: state.currentProject?.source) { _, _ in
+            if let project = state.currentProject { loadSource(project) }
+        }
         .onChange(of: state.currentProject?.artifacts["source_video"]) { _, _ in
             if let project = state.currentProject { loadSource(project) }
         }
@@ -139,8 +142,8 @@ struct ProjectWorkspaceView: View {
                         .frame(height: 220)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
-                    ContentUnavailableView("Preview pending", systemImage: "film",
-                        description: Text("The source video appears here when a local copy is available."))
+                    ContentUnavailableView("Source video unavailable", systemImage: "film",
+                        description: Text("The saved video path is not available on this Mac. Check whether the file was moved or deleted."))
                         .frame(height: 220)
                 }
             }
