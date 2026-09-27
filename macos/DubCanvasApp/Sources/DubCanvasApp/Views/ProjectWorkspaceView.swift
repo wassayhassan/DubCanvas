@@ -5,6 +5,7 @@ import SwiftUI
 struct ProjectWorkspaceView: View {
     @EnvironmentObject private var state: AppState
     @State private var showingComparison = false
+    @State private var sourcePlayer: AVPlayer?
 
     var body: some View {
         ScrollView {
@@ -30,12 +31,23 @@ struct ProjectWorkspaceView: View {
                 DubComparisonView(project: project).frame(minWidth: 880, minHeight: 640)
             }
         }
+        .onAppear { if let project = state.currentProject { loadSource(project) } }
+        .onChange(of: state.selectedProjectID) { _, _ in
+            sourcePlayer?.pause()
+            if let project = state.currentProject { loadSource(project) }
+        }
+        .onChange(of: state.currentProject?.artifacts["source_video"]) { _, _ in
+            if let project = state.currentProject { loadSource(project) }
+        }
+        .onDisappear { sourcePlayer?.pause() }
     }
 
     private func header(_ project: ProjectSummary) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
             Text(project.displayName).font(.largeTitle.bold())
-            Text(project.source).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(project.source).font(.callout).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             HStack {
                 Label("\(project.dubs.count) dubs", systemImage: "waveform")
                 Label("\(project.subtitles.count) subtitle sets", systemImage: "captions.bubble")
@@ -50,6 +62,15 @@ struct ProjectWorkspaceView: View {
                 }
             }
             .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("New Dub", systemImage: "plus") {
+                state.outputMode = .dub
+                state.dubName = ""
+                state.selection = .newDub
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         }
     }
 
@@ -82,39 +103,19 @@ struct ProjectWorkspaceView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            GroupBox("Shared source analysis") {
-                VStack(alignment: .leading, spacing: 10) {
-                    LabeledContent("Transcript", value: project.artifacts["source_srt"] != nil || project.artifacts["chinese_srt"] != nil ? "Ready" : "Pending")
-                    LabeledContent("Speaker map", value: project.artifacts["character_map"] != nil ? "Ready" : "Pending")
-                    LabeledContent("Source video", value: project.artifacts["source_video"] != nil ? "Ready" : "Pending")
-                    HStack {
-                        Button("Review Subtitles") { state.selection = .subtitles }
-                        Button("Review Speakers") { state.selection = .characters }
-                        if project.artifacts["source_srt"] == nil && project.artifacts["chinese_srt"] == nil {
-                            Button("Analyze Source") { state.startJob(analysis: true) }
-                                .disabled(!state.canStartJob)
-                        }
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }
-            GroupBox("Source") {
-                VStack(alignment: .leading, spacing: 8) {
-                    LabeledContent("Series", value: project.seriesID.isEmpty ? "—" : project.seriesID)
-                    Text(project.source).textSelection(.enabled)
-                    if let path = project.artifacts["source_video"] {
-                        ArtifactLink(title: "Original video", path: path)
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 16) {
+                    sourcePreview.frame(minWidth: 280)
+                    sharedAnalysis(project).frame(minWidth: 340)
+                }
+                VStack(alignment: .leading, spacing: 16) {
+                    sourcePreview
+                    sharedAnalysis(project)
+                }
             }
             HStack {
                 Button("View Subtitles") { state.selection = .subtitles }
                 Button("View Dubs") { state.selection = .dubs }
-                Spacer()
-                Button("New Dub", systemImage: "waveform.badge.plus") {
-                    state.outputMode = .dub
-                    state.selection = .newDub
-                }
-                    .buttonStyle(.borderedProminent)
             }
             if project.status == "failed", let error = project.lastError {
                 Label(error, systemImage: "exclamationmark.triangle")
@@ -128,6 +129,53 @@ struct ProjectWorkspaceView: View {
                 Button("Speakers & Voices") { state.selection = .characters }
             }
         }
+    }
+
+    private var sourcePreview: some View {
+        GroupBox("Source preview") {
+            VStack(alignment: .leading, spacing: 8) {
+                if let sourcePlayer {
+                    NativeDubPlayer(player: sourcePlayer)
+                        .frame(height: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    ContentUnavailableView("Preview pending", systemImage: "film",
+                        description: Text("The source video appears here when a local copy is available."))
+                        .frame(height: 220)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func sharedAnalysis(_ project: ProjectSummary) -> some View {
+        GroupBox("Shared source analysis") {
+            VStack(alignment: .leading, spacing: 12) {
+                LabeledContent("Transcript", value: project.artifacts["source_srt"] != nil || project.artifacts["chinese_srt"] != nil ? "Ready" : "Pending")
+                LabeledContent("Speakers", value: project.artifacts["character_map"] != nil ? "Ready" : "Pending")
+                LabeledContent("Source subtitles", value: project.artifacts["source_srt"] != nil || project.artifacts["chinese_srt"] != nil ? "Ready" : "Pending")
+                LabeledContent("Source language", value: project.sourceLanguage?.uppercased() ?? "Detecting")
+                if project.analysisRevision > 0 {
+                    LabeledContent("Analysis revision", value: "\(project.analysisRevision)")
+                }
+                Text("These source details are reused by dub versions in this project.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Subtitles") { state.selection = .subtitles }
+                    Button("Speakers") { state.selection = .characters }
+                    if project.artifacts["source_srt"] == nil && project.artifacts["chinese_srt"] == nil {
+                        Button("Analyze Source") { state.startJob(analysis: true) }
+                            .disabled(!state.canStartJob)
+                    }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func loadSource(_ project: ProjectSummary) {
+        let path = project.artifacts["source_video"] ?? project.source
+        sourcePlayer = FileManager.default.fileExists(atPath: path)
+            ? AVPlayer(url: URL(fileURLWithPath: path)) : nil
     }
 
     private func media(_ project: ProjectSummary) -> some View {
