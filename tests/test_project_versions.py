@@ -30,7 +30,7 @@ class ProjectVersionsTests(unittest.TestCase):
     def test_failed_dub_retries_in_place_after_restart(self):
         with tempfile.TemporaryDirectory() as temp:
             first_service = ApplicationService()
-            project = first_service.create_project(temp, "video.mp4")
+            project = first_service.create_project(temp, "video.mp4", "Video")
             calls = []
 
             def interrupted(config, progress, runner):
@@ -250,7 +250,7 @@ class ProjectVersionsTests(unittest.TestCase):
             audio = output / "audio.wav"
             audio.write_bytes(b"audio")
             service = ApplicationService()
-            project = service.create_project(temp, str(video))
+            project = service.create_project(temp, str(video), "Source")
 
             def translation(segments, *_args):
                 segments[0].translated = "Hello"
