@@ -2,13 +2,22 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         NavigationSplitView {
             List(selection: $state.selection) {
                 Section("Library") {
-                    sidebarRow(.projects)
-                    sidebarRow(.newProject)
+                    Button { openWindow(id: "welcome") } label: {
+                        Label("All Projects", systemImage: "square.stack.3d.up")
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        openWindow(id: "workspace", value: WorkspaceRequest.newProject(in: state.outputFolder))
+                    } label: {
+                        Label("New Project", systemImage: "folder.badge.plus")
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 if let project = state.currentProject {
@@ -72,7 +81,14 @@ struct RootView: View {
 
     @ViewBuilder private var detail: some View {
         switch state.selection ?? .projects {
-        case .projects: ProjectsView()
+        case .projects:
+            ContentUnavailableView {
+                Label("Choose a Project", systemImage: "folder")
+            } description: {
+                Text("Open a project from the welcome window.")
+            } actions: {
+                Button("Show Projects") { openWindow(id: "welcome") }
+            }
         case .newProject: NewProjectView()
         case .processing: ProjectWorkspaceView()
         case .overview, .media, .dubs: ProjectWorkspaceView()
@@ -97,7 +113,7 @@ struct RootView: View {
     }
 }
 
-private struct SystemCheckSheet: View {
+struct SystemCheckSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
 
