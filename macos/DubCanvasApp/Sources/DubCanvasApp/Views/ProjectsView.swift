@@ -1,7 +1,10 @@
+import AppKit
 import SwiftUI
 
 struct ProjectsView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var scenePhase
     @State private var search = ""
 
     private var recentProjects: [ProjectSummary] {
@@ -42,6 +45,15 @@ struct ProjectsView: View {
             }
         }
         .task { state.refreshProjects() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { state.refreshProjects() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            state.refreshProjects()
+        }
+        .sheet(isPresented: $state.showingSystemCheck) {
+            SystemCheckSheet().environmentObject(state)
+        }
     }
 
     private var newProjectCard: some View {
@@ -56,7 +68,9 @@ struct ProjectsView: View {
                 Text("Add a video once. Its transcript, speakers and source subtitles stay together for every dub.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Create New Project", systemImage: "plus") { state.newProject() }
+                Button("Create New Project", systemImage: "plus") {
+                    openWindow(id: "workspace", value: WorkspaceRequest.newProject(in: state.outputFolder))
+                }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
             }
@@ -89,7 +103,9 @@ struct ProjectsView: View {
                 } else {
                     LazyVStack(spacing: 8) {
                         ForEach(recentProjects) { project in
-                            Button { state.openProject(project) } label: {
+                            Button {
+                                openWindow(id: "workspace", value: WorkspaceRequest.existing(project))
+                            } label: {
                                 HStack(spacing: 12) {
                                     Image(systemName: "folder.fill")
                                         .font(.title3).foregroundStyle(.tint)
