@@ -291,10 +291,22 @@ def sanitize_name(text: str, max_len: int = 80) -> str:
     return (text or "video")[:max_len]
 
 
-def source_key(source: str) -> str:
+def source_key(source: str, output_dir: Optional[Path] = None) -> str:
     p = Path(source).expanduser()
-    if p.exists():
-        return sanitize_name(p.stem)
+    if p.exists() or p.is_absolute():
+        base = sanitize_name(p.stem)
+        if output_dir is not None:
+            manifest = (Path(output_dir).expanduser().resolve() /
+                        ".anime_dubber_project" / "projects" / f"{base}.json")
+            if manifest.exists():
+                try:
+                    old_source = json.loads(manifest.read_text(encoding="utf-8")).get("source")
+                except (OSError, ValueError, AttributeError):
+                    old_source = None
+                if old_source != source:
+                    digest = hashlib.sha256(str(p.resolve()).encode("utf-8")).hexdigest()[:12]
+                    return f"{base[:67]}_{digest}"
+        return base
     try:
         u = urlparse(source)
         if u.netloc in {"youtu.be", "www.youtu.be"} and u.path.strip("/"):
@@ -2075,7 +2087,7 @@ def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, ru
     progress = progress or print
     runner = runner or CommandRunner(progress)
     out = Path(config.output_dir).expanduser().resolve(); out.mkdir(parents=True, exist_ok=True)
-    key = source_key(config.source)
+    key = source_key(config.source, out)
     work = out / ".anime_dubber_work" / key; work.mkdir(parents=True, exist_ok=True)
     video = download_source(config.source, work, runner, progress)
     audio = extract_audio(video, work, runner, progress, config)
@@ -2104,7 +2116,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     runner = runner or CommandRunner(progress)
     out = Path(config.output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
-    key = source_key(config.source)
+    key = source_key(config.source, out)
     work = out / ".anime_dubber_work" / key
     version_dir = out / "versions" / config.version_id if config.version_id else out
     version_dir.mkdir(parents=True, exist_ok=True)

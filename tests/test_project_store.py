@@ -8,9 +8,33 @@ from unittest.mock import patch
 
 from anime_dubber.application.project import ProjectStore, get_project, list_projects
 from anime_dubber.application.service import ApplicationService
+from anime_dubber.core import source_key
 
 
 class ProjectStoreTests(unittest.TestCase):
+    def test_local_files_with_same_name_get_separate_projects_and_work_keys(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            output = root / "output"
+            first = root / "a" / "episode.mp4"
+            second = root / "b" / "episode.mp4"
+            for video in (first, second):
+                video.parent.mkdir()
+                video.write_bytes(b"test")
+
+            service = ApplicationService()
+            project_a = service.create_project(str(output), str(first), "First")
+            project_b = service.create_project(str(output), str(second), "Second")
+            self.assertEqual(project_a["project_id"], "episode")
+            self.assertNotEqual(project_a["project_id"], project_b["project_id"])
+            self.assertEqual(source_key(str(first), output), project_a["project_id"])
+            self.assertEqual(source_key(str(second), output), project_b["project_id"])
+            self.assertEqual(len(service.list_projects(str(output))), 2)
+            self.assertEqual(service.create_project(str(output), str(second))["name"], "Second")
+
+            first.unlink()
+            self.assertEqual(ProjectStore(output, str(first)).project_id, "episode")
+
     def test_source_revisions_are_reused_and_existing_dubs_keep_their_snapshot(self):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
