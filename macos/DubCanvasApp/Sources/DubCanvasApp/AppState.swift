@@ -375,7 +375,7 @@ final class AppState: ObservableObject {
         jobIssue = message
         jobIssueDetail = message
         statusText = "Could not start"
-        selection = selectedProjectID == nil ? .newProject : .overview
+        selection = .newProject
     }
 
     func startJob(analysis: Bool) {
