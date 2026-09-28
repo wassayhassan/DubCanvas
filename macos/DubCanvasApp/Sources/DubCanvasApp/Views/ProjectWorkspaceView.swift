@@ -166,8 +166,11 @@ struct ProjectWorkspaceView: View {
                 HStack {
                     Button("Subtitles") { state.selection = .subtitles }
                     Button("Speakers") { state.selection = .characters }
-                    if project.artifacts["source_srt"] == nil && project.artifacts["chinese_srt"] == nil {
-                        Button("Analyze Source") { state.startJob(analysis: true) }
+                    if (project.artifacts["source_srt"] == nil && project.artifacts["chinese_srt"] == nil) ||
+                        project.artifacts["character_map"] == nil {
+                        Button(project.status == "paused" || project.status == "failed" ? "Retry Source Analysis" : "Analyze Source") {
+                            state.startJob(analysis: true)
+                        }
                             .disabled(!state.canStartJob)
                     }
                 }

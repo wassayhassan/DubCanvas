@@ -29,10 +29,15 @@ struct RootView: View {
                         sidebarRow(.dubs)
                         sidebarRow(.newDub)
                         ForEach(project.dubs) { dub in
-                            Label(dub.title, systemImage: dub.status == "completed" ? "checkmark.circle" : "waveform.circle")
-                                .lineLimit(1)
-                                .padding(.leading, 12)
-                                .tag(SidebarDestination.dub(dub.id))
+                            Button { state.selectDub(dub) } label: {
+                                Label(dub.title, systemImage: dub.status == "completed" ? "checkmark.circle" : "waveform.circle")
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                    .padding(.leading, 12)
+                            }
+                            .buttonStyle(.plain)
+                            .tag(SidebarDestination.dub(dub.id))
                         }
                     }
                 }
@@ -73,10 +78,13 @@ struct RootView: View {
     }
 
     private func sidebarRow(_ destination: SidebarDestination) -> some View {
-        Label(destination.title, systemImage: destination.symbol)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .tag(destination)
+        Button { state.selection = destination } label: {
+            Label(destination.title, systemImage: destination.symbol)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .tag(destination)
     }
 
     @ViewBuilder private var detail: some View {
