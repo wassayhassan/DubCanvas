@@ -9,6 +9,12 @@ final class AppState: ObservableObject {
 
     @Published var source = ""
     @Published var projectName = ""
+    @Published var sourceInspection: SourceInspection?
+    @Published var sourceValidationIssue: String?
+    @Published var sourceValidationPending = false
+    private enum PendingSourceAction { case firstDub, projectOnly }
+    private var pendingSourceAction: PendingSourceAction?
+    private var inspectionRequests: [String: String] = [:]
     @Published var dubName = ""
     @Published var versionVoiceOverrides: [String: [String: String]] = [:]
     @Published var targetLanguage = "en"
@@ -329,6 +335,45 @@ final class AppState: ObservableObject {
         return nil
     }
 
+    var suggestedProjectName: String? {
+        let base = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !base.isEmpty, projectNameProblem() != nil else { return nil }
+        let taken = Set(projects.map { $0.name.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased() })
+        var number = 2
+        while taken.contains("\(base) \(number)".lowercased()) { number += 1 }
+        return "\(base) \(number)"
+    }
+
+    func resetSourceInspection() {
+        sourceInspection = nil
+        sourceValidationIssue = nil
+        sourceValidationPending = false
+        pendingSourceAction = nil
+    }
+
+    func inspectSource() {
+        let input = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty else { return }
+        if sourceValidationPending && inspectionRequests.values.contains(input) { return }
+        sourceValidationPending = true
+        sourceValidationIssue = nil
+        do {
+            let id = "inspect-source-\(UUID().uuidString)"
+            inspectionRequests[id] = input
+            _ = try backend.send(method: "inspect_source", params: ["source": input], id: id)
+        } catch {
+            sourceValidationPending = false
+            sourceValidationIssue = error.localizedDescription
+        }
+    }
+
+    private func sourceIsInspected(for action: PendingSourceAction) -> Bool {
+        if sourceInspection?.source == source.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
+        pendingSourceAction = action
+        inspectSource()
+        return false
+    }
+
     var quickStartProblem: String? {
         if let issue = projectNameProblem() { return issue }
         let input = source.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -372,6 +417,7 @@ final class AppState: ObservableObject {
             selection = .newProject
             return
         }
+        guard sourceIsInspected(for: .firstDub) else { return }
         jobIssue = ""
         jobIssueDetail = ""
         startPending = true
@@ -561,12 +607,14 @@ final class AppState: ObservableObject {
             statusText = "Choose a source video first."
             return
         }
+        guard sourceIsInspected(for: .projectOnly) else { return }
         do {
             _ = try backend.send(method: "create_project", params: [
                 "source": source.trimmingCharacters(in: .whitespacesAndNewlines),
                 "output_dir": outputFolder,
                 "name": projectName,
                 "series_id": seriesID,
+                "source_title": sourceInspection?.title ?? "",
             ], id: "create-project-\(UUID().uuidString)")
         } catch {
             statusText = error.localizedDescription
@@ -589,6 +637,7 @@ final class AppState: ObservableObject {
     }
 
     func openProject(_ project: ProjectSummary) {
+        let keepDestination = selectedProjectID == project.id ? selection : nil
         if characterMaps.first(where: { $0.path == selectedCharacterMapPath })?.sourceKey != project.id {
             versionVoiceOverrides = [:]
             selectedCharacterMapPath = nil
@@ -600,7 +649,7 @@ final class AppState: ObservableObject {
         outputFolder = project.outputDir
         seriesID = project.seriesID
         projectName = project.name
-        selection = .overview
+        selection = keepDestination ?? .overview
         refreshCharacterMaps()
     }
 
@@ -613,6 +662,7 @@ final class AppState: ObservableObject {
         seriesID = ""
         seriesContext = ""
         jobIssue = ""
+        resetSourceInspection()
         outputMode = .dub
         selection = .newProject
     }
@@ -875,6 +925,15 @@ final class AppState: ObservableObject {
         if !ok {
             let error = payload["error"] as? [String: Any]
             let message = error?["message"] as? String ?? "Backend request failed."
+            if id.hasPrefix("inspect-source-") {
+                let requested = inspectionRequests.removeValue(forKey: id)
+                if requested == source.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    sourceValidationPending = false
+                    sourceValidationIssue = message
+                    pendingSourceAction = nil
+                }
+                return
+            }
             activity.append(ActivityEntry(kind: .error, message: message))
             statusText = message
             if id.hasPrefix("delete-project-") {
@@ -904,6 +963,18 @@ final class AppState: ObservableObject {
         let result = resultAny as? [String: Any] ?? [:]
 
         switch id {
+        case let id where id.hasPrefix("inspect-source-"):
+            let requested = inspectionRequests.removeValue(forKey: id)
+            guard requested == source.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let inspection = SourceInspection(dictionary: result) else { return }
+            sourceValidationPending = false
+            sourceValidationIssue = nil
+            sourceInspection = inspection
+            let action = pendingSourceAction
+            pendingSourceAction = nil
+            if action == .firstDub { quickStart() }
+            if action == .projectOnly { createProject() }
+
         case "hello":
             let version = result["version"] as? String ?? "ready"
             backendState = .ready(version: version)
@@ -969,6 +1040,7 @@ final class AppState: ObservableObject {
                         "output_dir": outputFolder,
                         "name": projectName,
                         "series_id": seriesID,
+                        "source_title": sourceInspection?.title ?? "",
                     ], id: "create-project-quick-\(UUID().uuidString)")
                 } catch { failQuickStart(error.localizedDescription) }
             }

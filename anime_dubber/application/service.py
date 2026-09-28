@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from urllib.parse import urlparse
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -711,10 +712,86 @@ class ApplicationService:
                      dub_id=str(dub.get("id") or "") if dub else "")
         return True
 
-    def create_project(self, output_dir: str, source: str, name: str = "", series_id: str = "") -> dict:
+    def create_project(self, output_dir: str, source: str, name: str = "", series_id: str = "", source_title: str = "") -> dict:
         if not output_dir.strip() or not source.strip():
             raise ValueError("source and output_dir are required")
-        return ProjectStore(Path(output_dir), source).create(source=source, name=name, series_id=series_id)
+        return ProjectStore(Path(output_dir), source).create(source=source, name=name, series_id=series_id,
+                                                          source_title=source_title)
+
+    def inspect_source(self, source: str) -> dict:
+        """Check the selected media before committing a project or starting a job."""
+        value = str(source or "").strip()
+        if not value:
+            raise ValueError("Choose a video file or paste a video page link.")
+        if is_url(value):
+            parsed = urlparse(value)
+            if (not parsed.hostname or parsed.hostname.endswith("googlevideo.com")
+                    or "/videoplayback" in parsed.path):
+                raise ValueError("Use a normal video page link. Temporary playback links expire; paste the page URL instead.")
+            if not _module_available("yt_dlp"):
+                raise ValueError("Video link support needs yt-dlp. Install the app's video tools or choose a local file.")
+            command = [sys.executable, "-m", "yt_dlp", "--dump-single-json", "--skip-download",
+                       "--no-playlist", "--socket-timeout", "8", "--retries", "1"]
+            attempts = [command + [value]]
+            if parsed.hostname in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+                attempts.append(command + ["--extractor-args", "youtube:player_client=web_embedded", value])
+            checked = None
+            for attempt in attempts:
+                try:
+                    checked = subprocess.run(attempt, capture_output=True, text=True, timeout=30, check=False)
+                except subprocess.TimeoutExpired as exc:
+                    if attempt is attempts[-1]:
+                        raise ValueError("The video site did not respond in time. Check the link and connection, or choose a local file.") from exc
+                    continue
+                if checked.returncode == 0:
+                    break
+            if checked is None:
+                raise ValueError("The video link could not be checked. Choose a local file or retry the page URL.")
+            if checked.returncode != 0:
+                detail = (checked.stderr or "").strip().splitlines()[-1:]
+                raise ValueError("The video link could not be opened. Check the page URL or choose a local file. "
+                                 + " ".join(detail)[:300])
+            try:
+                info = json.loads(checked.stdout)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("The video site did not return usable details. Choose a local file or a supported video page.") from exc
+            if info.get("is_live"):
+                raise ValueError("Live streams cannot be dubbed. Choose a saved video instead.")
+            if not info.get("formats") and not info.get("url") and not info.get("requested_formats"):
+                raise ValueError("This link does not provide a downloadable video. Choose a video page or local file.")
+            formats = info.get("requested_formats") or info.get("formats") or [info]
+            if not any(row.get("vcodec") not in (None, "", "none") for row in formats):
+                raise ValueError("No video track was found at this link. Choose a video page or a local video file.")
+            if not any(row.get("acodec") not in (None, "", "none") for row in formats):
+                raise ValueError("No audio track was found at this link. Choose a video with audible dialogue.")
+            try:
+                duration = float(info.get("duration") or 0)
+            except (ValueError, TypeError):
+                duration = 0
+            return {"source": value, "kind": "url", "title": str(info.get("title") or parsed.hostname),
+                    "duration": duration, "size_bytes": info.get("filesize") or info.get("filesize_approx"),
+                    "thumbnail_url": str(info.get("thumbnail") or "")}
+        if "://" in value:
+            raise ValueError("Only http or https video page links are supported. Paste the page URL or choose a local file.")
+        path = Path(value).expanduser()
+        if not path.is_file():
+            raise ValueError("The video file is missing. Choose it again from its current location.")
+        try:
+            with path.open("rb") as handle:
+                if not handle.read(1):
+                    raise ValueError("The video file is empty. Choose a different file.")
+            validate_media_streams(path, CommandRunner())
+            probe = CommandRunner().run([
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "json", str(path),
+            ])
+            duration = float(json.loads(probe.stdout or "{}").get("format", {}).get("duration") or 0)
+        except OSError as exc:
+            raise ValueError("The video file cannot be read. Check its permissions or choose another file.") from exc
+        except (PipelineError, ValueError) as exc:
+            raise ValueError(f"The selected file is not a usable video with audio: {exc}") from exc
+        return {"source": value, "kind": "file", "title": path.name,
+                "duration": duration, "size_bytes": path.stat().st_size}
 
     def update_project(self, output_dir: str, project_id: str, name: str, series_id: str) -> dict:
         project = self.get_project(output_dir, project_id)

@@ -17,6 +17,44 @@ enum SidebarDestination: Hashable {
     case activity
     case settings
 
+    var storageKey: String {
+        switch self {
+        case .dub(let id): "dub:\(id)"
+        case .review(let id): "review:\(id)"
+        case .overview: "overview"
+        case .media: "media"
+        case .subtitles: "subtitles"
+        case .characters: "characters"
+        case .dubs: "dubs"
+        case .newDub: "newDub"
+        case .newSubtitles: "newSubtitles"
+        case .activity: "activity"
+        case .settings: "settings"
+        case .projectSettings: "projectSettings"
+        case .processing: "processing"
+        case .projects: "projects"
+        case .newProject: "newProject"
+        }
+    }
+
+    init?(storageKey: String) {
+        if storageKey.hasPrefix("dub:") { self = .dub(String(storageKey.dropFirst(4))); return }
+        if storageKey.hasPrefix("review:") { self = .review(String(storageKey.dropFirst(7))); return }
+        switch storageKey {
+        case "overview": self = .overview
+        case "media": self = .media
+        case "subtitles": self = .subtitles
+        case "characters": self = .characters
+        case "dubs": self = .dubs
+        case "newDub": self = .newDub
+        case "newSubtitles": self = .newSubtitles
+        case "activity": self = .activity
+        case "settings": self = .settings
+        case "projectSettings": self = .projectSettings
+        default: return nil
+        }
+    }
+
     var title: String {
         switch self {
         case .newProject: "New Project"
@@ -189,10 +227,30 @@ struct SystemCheckItem: Identifiable {
     var optional = false
 }
 
+struct SourceInspection {
+    let source: String
+    let kind: String
+    let title: String
+    let duration: Double
+    let sizeBytes: Int64?
+    let thumbnailURL: String?
+
+    init?(dictionary: [String: Any]) {
+        guard let source = dictionary["source"] as? String else { return nil }
+        self.source = source
+        kind = dictionary["kind"] as? String ?? "file"
+        title = dictionary["title"] as? String ?? "Video"
+        duration = (dictionary["duration"] as? NSNumber)?.doubleValue ?? 0
+        sizeBytes = (dictionary["size_bytes"] as? NSNumber)?.int64Value
+        thumbnailURL = dictionary["thumbnail_url"] as? String
+    }
+}
+
 
 struct ProjectSummary: Identifiable {
     let id: String
     let source: String
+    let sourceTitle: String
     let name: String
     let seriesID: String
     let outputDir: String
@@ -201,6 +259,8 @@ struct ProjectSummary: Identifiable {
     let stageTitle: String
     let progress: Double?
     let updatedAt: String
+    let startedAt: String
+    let lastRunMode: String
     let artifacts: [String: String]
     let subtitles: [SubtitleSummary]
     let dubs: [DubSummary]
@@ -213,6 +273,9 @@ struct ProjectSummary: Identifiable {
         guard let projectID = dictionary["project_id"] as? String, !projectID.isEmpty else { return nil }
         id = projectID
         source = dictionary["source"] as? String ?? ""
+        let inspectedTitle = dictionary["source_title"] as? String ?? ""
+        sourceTitle = !inspectedTitle.isEmpty ? inspectedTitle :
+            (source.hasPrefix("http") ? (URL(string: source)?.host ?? "Video link") : URL(fileURLWithPath: source).lastPathComponent)
         name = dictionary["name"] as? String ?? ""
         seriesID = dictionary["series_id"] as? String ?? ""
         outputDir = dictionary["output_dir"] as? String ?? ""
@@ -225,6 +288,8 @@ struct ProjectSummary: Identifiable {
             progress = nil
         }
         updatedAt = dictionary["updated_at"] as? String ?? ""
+        startedAt = dictionary["started_at"] as? String ?? ""
+        lastRunMode = dictionary["last_run_mode"] as? String ?? ""
         artifacts = dictionary["artifacts"] as? [String: String] ?? [:]
         let subtitleRows = dictionary["subtitles"] as? [String: [String: Any]] ?? [:]
         subtitles = subtitleRows.map { SubtitleSummary(id: $0.key, dictionary: $0.value) }
