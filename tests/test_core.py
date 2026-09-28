@@ -14,12 +14,21 @@ from anime_dubber.core import (
     source_key,
     srt_timestamp,
     write_srt,
+    translation_is_usable,
     _merge_dialogue_guard_intervals,
     _precise_row_bounds,
 )
 
 
 class CoreTests(unittest.TestCase):
+    def test_translation_rejects_copied_chinese_and_malformed_output(self):
+        self.assertFalse(translation_is_usable("天下武林,门派如林", "天下武林,门派如林", "zh", "en"))
+        self.assertFalse(translation_is_usable("唐门", "", "zh", "en"))
+        self.assertFalse(translation_is_usable("唐门", '{"id": 1, "text": "Tang Sect"}', "zh", "en"))
+        self.assertTrue(translation_is_usable("唐门", "The Tang Sect", "zh", "en"))
+        self.assertTrue(translation_is_usable("唐门", "山田太郎", "zh", "ja"))
+        self.assertTrue(translation_is_usable("No", "No", "en", "es"))
+
     def test_srt_timestamp(self):
         self.assertEqual(srt_timestamp(0), "00:00:00,000")
         self.assertEqual(srt_timestamp(61.234), "00:01:01,234")
