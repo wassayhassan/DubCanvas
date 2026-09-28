@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -325,6 +326,27 @@ def is_url(source: str) -> bool:
         return urlparse(source).scheme in {"http", "https"}
     except Exception:
         return False
+
+
+def resolve_translation_mode(config: Config, *, mlx_available: Optional[bool] = None,
+                             ollama_available: Optional[bool] = None) -> str:
+    """Select the same automatic translator in preflight and in the pipeline."""
+    if config.translation != "auto":
+        return config.translation
+    if config.source_language == config.target_language:
+        return "whisper"  # No translation will run.
+    if mlx_available is None:
+        mlx_available = (platform.system() == "Darwin" and platform.machine() == "arm64"
+                         and importlib.util.find_spec("mlx_lm") is not None)
+    if mlx_available:
+        return "llm"
+    if ollama_available is None:
+        ollama_available = shutil.which("ollama") is not None
+    if ollama_available:
+        return "ollama"
+    if config.target_language == "en":
+        return "whisper"
+    raise PipelineError("Automatic translation needs an MLX model or Ollama for this target language.")
 
 
 def srt_timestamp(seconds: float) -> str:
@@ -1268,9 +1290,11 @@ def separate_dialogue(
         if cp.returncode == 0:
             vocals = _find_stem(stems_dir, "vocals.wav")
             bg = _find_stem(stems_dir, "no_vocals.wav")
-            if vocals and bg:
+            if (vocals and bg
+                    and _complete_wav(vocals, minimum_seconds=audio_seconds * .98)
+                    and _complete_wav(bg, minimum_seconds=audio_seconds * .98)):
                 return vocals, bg
-        last_error = (cp.stderr or cp.stdout or "")[-3000:]
+        last_error = (cp.stderr or cp.stdout or "")[-3000:] or "Demucs produced incomplete audio stems"
         if device != devices[-1]:
             progress(f"Demucs {device} failed; retrying on {devices[-1]} for compatibility…")
     raise PipelineError(f"Demucs could not separate the soundtrack.\n{last_error or ''}")
@@ -2183,16 +2207,16 @@ def speaker_analysis_audio(vocals: Path, original: Path, progress: ProgressCallb
 
 def transcribe_before_separation(
     audio: Path, config: Config, work: Path, runner: CommandRunner, progress: ProgressCallback,
-) -> List[Segment]:
+) -> Tuple[List[Segment], Path]:
     """Publishable source speech comes first; separation is a last ASR recovery path."""
     segments = transcribe_audio(audio, config, work, runner, progress, task="transcribe")
-    if segments or config.mode == "subtitles":
-        return segments
+    if segments:
+        return segments, audio
     progress("No speech found in the original soundtrack; trying separated dialogue…")
     vocals, _ = separate_dialogue(audio, work, runner, progress, config)
     separated_work = work / "separated_asr"
     separated_work.mkdir(parents=True, exist_ok=True)
-    return transcribe_audio(vocals, config, separated_work, runner, progress, task="transcribe")
+    return transcribe_audio(vocals, config, separated_work, runner, progress, task="transcribe"), vocals
 
 
 def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
@@ -2210,7 +2234,7 @@ def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, ru
     if callback:
         callback("source_video", video, config.source_language)
     audio = extract_audio(video, work, runner, progress, config)
-    segments = transcribe_before_separation(audio, config, work, runner, progress)
+    segments, _transcript_audio = transcribe_before_separation(audio, config, work, runner, progress)
     if not segments:
         raise PipelineError("No speech was recognized in the original soundtrack. Check that the source video has audible dialogue.")
     zh_srt = out / f"{key}_{config.source_language}.srt"; write_srt(segments, zh_srt, translated=False)
@@ -2262,8 +2286,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
             path.unlink()
     publish("source_video", video, config.source_language)
     audio = extract_audio(video, work, runner, progress, config)
-    zh_segments = transcribe_before_separation(audio, config, work, runner, progress)
-    transcript_audio = audio
+    zh_segments, transcript_audio = transcribe_before_separation(audio, config, work, runner, progress)
     if not zh_segments:
         raise PipelineError("No speech was recognized in the original soundtrack. Check that the source video has audible dialogue; no dub or empty subtitle file was produced.")
     source_kind = "chinese" if config.source_language == "zh" else "source"
@@ -2274,16 +2297,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     publish(f"{source_kind}_srt", zh_srt, config.source_language)
     publish(f"{source_kind}_vtt", zh_vtt, config.source_language)
 
-    translation_mode = config.translation
-    if translation_mode == "auto":
-        if platform.system() == "Darwin" and platform.machine() == "arm64":
-            try:
-                import mlx_lm  # noqa: F401
-                translation_mode = "llm"
-            except Exception:
-                translation_mode = "whisper"
-        else:
-            translation_mode = "ollama" if config.target_language != "en" else "whisper"
+    translation_mode = resolve_translation_mode(config)
     if config.target_language != "en" and translation_mode == "whisper" and config.source_language != config.target_language:
         raise PipelineError("Whisper direct translation only supports English; choose LLM or Ollama.")
     if (config.review_before_dub and config.mode == "dub" and translation_mode == "whisper"
@@ -2298,7 +2312,8 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     elif translation_mode == "ollama":
         segments = translate_with_ollama_provider(zh_segments, config, work, runner, progress)
     elif translation_mode == "whisper":
-        en_whisper = transcribe_audio(transcript_audio, config, work, runner, progress, task="translate")
+        translation_work = work if transcript_audio == audio else work / "separated_asr"
+        en_whisper = transcribe_audio(transcript_audio, config, translation_work, runner, progress, task="translate")
         segments = [Segment(s.start, s.end, s.text, s.text) for s in en_whisper]
     else:
         raise PipelineError(f"Unsupported translation mode: {translation_mode}")

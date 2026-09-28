@@ -17,6 +17,7 @@ from ..core import (
     CancelledError,
     CommandRunner,
     Config,
+    PipelineError,
     ReviewRequired,
     DEFAULT_CONTEXT,
     DEFAULT_GLOSSARY,
@@ -26,6 +27,7 @@ from ..core import (
     _atomic_json_write,
     is_url,
     validate_media_streams,
+    resolve_translation_mode,
 )
 from ..languages import TARGET_LANGUAGES
 from .events import AppEvent, progress_to_event
@@ -338,14 +340,19 @@ class ApplicationService:
         if not caps["asr"].get(selected_asr, False):
             missing.append(f"{selected_asr} speech recognition")
         if not analysis and config.source_language != config.target_language:
-            provider = config.translation
+            try:
+                provider = resolve_translation_mode(
+                    config,
+                    mlx_available=bool(caps["translation"]["mlx_llm"]),
+                    ollama_available=bool(caps["translation"]["ollama"]),
+                )
+            except PipelineError:
+                provider = "unavailable"
             if provider == "llm" and not caps["translation"]["mlx_llm"]:
                 missing.append("MLX translation model runtime")
             elif provider == "ollama" and not caps["translation"]["ollama"]:
                 missing.append("Ollama translation runtime")
-            elif provider == "auto" and config.target_language != "en" and not (
-                caps["translation"]["mlx_llm"] or caps["translation"]["ollama"]
-            ):
+            elif provider == "unavailable":
                 missing.append("translation model runtime")
         if config.mode == "dub" and not analysis:
             voices = caps["tts"]

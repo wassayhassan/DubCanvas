@@ -20,9 +20,29 @@ class PipelineOrchestrationTests(unittest.TestCase):
             config = Config(source="video.mp4", output_dir=work)
             with patch("anime_dubber.core.transcribe_audio", side_effect=[[], [Segment(0, 1, "Speech")]]) as asr, \
                  patch("anime_dubber.core.separate_dialogue", return_value=(vocals, work / "bg.wav")):
-                segments = transcribe_before_separation(original, config, work, CommandRunner(), lambda _: None)
+                segments, transcript_audio = transcribe_before_separation(original, config, work, CommandRunner(), lambda _: None)
             self.assertEqual([call.args[0] for call in asr.call_args_list], [original, vocals])
             self.assertEqual(segments[0].text, "Speech")
+            self.assertEqual(transcript_audio, vocals)
+
+    def test_subtitles_retry_separated_audio_and_direct_translation_uses_that_stem(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); video = root / "video.mp4"; video.write_bytes(b"video")
+            audio = root / "original.wav"; vocals = root / "vocals.wav"
+            cfg = Config(source=str(video), output_dir=root / "out", mode="subtitles",
+                         translation="whisper", source_language="es")
+            calls = []
+            def transcribe(path, _config, _work, _runner, _progress, *, task="transcribe"):
+                calls.append((path, task))
+                if path == audio:
+                    return []
+                return [Segment(0, 1, "Hola" if task == "transcribe" else "Hello")]
+            with patch("anime_dubber.core.extract_audio", return_value=audio), \
+                 patch("anime_dubber.core.separate_dialogue", return_value=(vocals, root / "bg.wav")), \
+                 patch("anime_dubber.core.transcribe_audio", side_effect=transcribe):
+                results = run_pipeline(cfg, lambda _: None, CommandRunner())
+            self.assertEqual(calls, [(audio, "transcribe"), (vocals, "transcribe"), (vocals, "translate")])
+            self.assertIn("Hello", results["translated_srt"].read_text())
 
     def test_dub_publishes_both_subtitle_sets_before_separation_failure(self):
         with tempfile.TemporaryDirectory() as td:

@@ -10,10 +10,19 @@ from anime_dubber.application.events import progress_to_event
 from anime_dubber.application.service import ApplicationService, config_from_dict
 from anime_dubber.cli import build_parser
 from anime_dubber.application.project import ProjectStore
-from anime_dubber.core import ReviewRequired
+from anime_dubber.core import Config, ReviewRequired, resolve_translation_mode
 
 
 class ApplicationServiceTests(unittest.TestCase):
+    def test_auto_translation_uses_available_ollama_for_english(self):
+        cfg = Config(source="video.mp4", output_dir=Path("/tmp"), source_language="es",
+                     target_language="en", translation="auto")
+        self.assertEqual(resolve_translation_mode(cfg, mlx_available=False, ollama_available=True), "ollama")
+        self.assertEqual(resolve_translation_mode(cfg, mlx_available=False, ollama_available=False), "whisper")
+        cfg.target_language = "ja"
+        with self.assertRaisesRegex(Exception, "needs an MLX model or Ollama"):
+            resolve_translation_mode(cfg, mlx_available=False, ollama_available=False)
+
     def test_replacing_source_hides_old_shared_analysis_but_keeps_versions(self):
         with tempfile.TemporaryDirectory() as temp:
             store = ProjectStore(Path(temp), "video.mp4")

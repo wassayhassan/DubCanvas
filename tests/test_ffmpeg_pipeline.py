@@ -27,6 +27,7 @@ from anime_dubber.core import (
     _ffconcat_quote,
     _complete_wav,
     extract_audio,
+    separate_dialogue,
     validate_source_cache,
     run_pipeline,
 )
@@ -34,6 +35,29 @@ from anime_dubber.core import (
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe required")
 class FfmpegPipelineTests(unittest.TestCase):
+    def test_demucs_success_with_short_stems_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); audio = root / "original.wav"
+            with wave.open(str(audio), "wb") as output:
+                output.setnchannels(2); output.setsampwidth(2); output.setframerate(44100)
+                output.writeframes(b"\0" * 44100 * 4)
+            runner = CommandRunner()
+            real_run = runner.run
+            def incomplete_demucs(cmd, **kwargs):
+                if cmd[0] == "ffprobe":
+                    return real_run(cmd, **kwargs)
+                stem_dir = root / "stems" / "htdemucs" / "original"
+                stem_dir.mkdir(parents=True, exist_ok=True)
+                for name in ("vocals.wav", "no_vocals.wav"):
+                    with wave.open(str(stem_dir / name), "wb") as output:
+                        output.setnchannels(2); output.setsampwidth(2); output.setframerate(44100)
+                        output.writeframes(b"\0" * 4410 * 4)
+                return subprocess.CompletedProcess([], 0, "", "")
+            with patch.object(runner, "run", side_effect=incomplete_demucs):
+                with self.assertRaisesRegex(PipelineError, "incomplete audio stems"):
+                    separate_dialogue(audio, root, runner, lambda _: None,
+                                      Config(source="video.mp4", output_dir=root, demucs_device="cpu"))
+
     def test_full_media_path_creates_playable_video_with_audible_dub_and_subtitles(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); source = root / "video.mp4"; voice = root / "voice.wav"
