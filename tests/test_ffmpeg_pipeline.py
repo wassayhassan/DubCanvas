@@ -4,12 +4,15 @@ import subprocess
 import tempfile
 import unittest
 import wave
+import json
+import numpy as np
 from unittest.mock import patch
 from pathlib import Path
 
 from anime_dubber.core import (
     CommandRunner,
     Config,
+    PipelineError,
     Segment,
     TimingOverlapError,
     ffprobe_duration,
@@ -22,11 +25,79 @@ from anime_dubber.core import (
     _pitch_filters,
     _ffconcat_quote,
     _complete_wav,
+    extract_audio,
+    validate_source_cache,
+    run_pipeline,
 )
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe required")
 class FfmpegPipelineTests(unittest.TestCase):
+    def test_full_media_path_creates_playable_video_with_audible_dub_and_subtitles(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); source = root / "video.mp4"; voice = root / "voice.wav"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "color=c=black:s=160x120:d=2.4", "-f", "lavfi", "-i",
+                            "anullsrc=r=44100:cl=stereo", "-t", "2.4", "-c:v", "mpeg4",
+                            "-c:a", "aac", str(source)], check=True)
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "sine=frequency=880:duration=0.5", "-ac", "2", "-ar", "44100",
+                            str(voice)], check=True)
+            config = Config(source=str(source), output_dir=root / "out", source_language="es",
+                            target_language="en", translation="llm", multi_character=False,
+                            review_before_dub=False, chunk_seconds=30)
+
+            def translate(segments, *_args):
+                segments[0].translated = "Hello"
+                return segments
+
+            with patch("anime_dubber.core.transcribe_audio", return_value=[Segment(0.4, 1.1, "Hola")]), \
+                 patch("anime_dubber.core.translate_with_llm", side_effect=translate), \
+                 patch("anime_dubber.core.separate_dialogue", side_effect=lambda audio, *_args: (audio, audio)), \
+                 patch("anime_dubber.core.prepare_tts_clip", return_value=voice):
+                result = run_pipeline(config, lambda _: None, CommandRunner())
+            self.assertIn("Hola", result["source_srt"].read_text())
+            self.assertIn("Hello", result["translated_srt"].read_text())
+            probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                                    "stream=codec_type:format=duration", "-of", "json",
+                                    str(result["dubbed_video"])], capture_output=True, text=True, check=True)
+            media = json.loads(probe.stdout)
+            self.assertEqual({s["codec_type"] for s in media["streams"]}, {"video", "audio"})
+            self.assertGreater(float(media["format"]["duration"]), 2.2)
+            output_wav = root / "check.wav"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i",
+                            str(result["dubbed_video"]), "-vn", "-c:a", "pcm_s16le", str(output_wav)], check=True)
+            with wave.open(str(output_wav), "rb") as handle:
+                samples = np.frombuffer(handle.readframes(handle.getnframes()), dtype="<i2")
+            self.assertGreater(float(np.sqrt(np.mean(samples.astype(np.float64) ** 2))), 100.0)
+
+    def test_replaced_source_invalidates_extracted_audio(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); source = root / "same-name.mp4"; work = root / "work"; work.mkdir()
+            runner = CommandRunner()
+            config = Config(source=str(source), output_dir=root / "out")
+            durations = []
+            for seconds in (1, 2):
+                subprocess.run([
+                    "ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    f"color=c=black:s=160x120:d={seconds}", "-f", "lavfi", "-i",
+                    f"sine=frequency=440:duration={seconds}", "-shortest", "-c:v", "mpeg4",
+                    "-c:a", "aac", str(source),
+                ], check=True)
+                validate_source_cache(source, work, lambda _message: None)
+                durations.append(ffprobe_duration(extract_audio(source, work, runner, lambda _: None, config), runner))
+            self.assertLess(durations[0], 1.2)
+            self.assertGreater(durations[1], 1.9)
+
+    def test_video_without_audio_is_rejected_before_transcription(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); source = root / "silent.mp4"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "color=c=black:s=160x120:d=1", "-c:v", "mpeg4", str(source)], check=True)
+            with self.assertRaisesRegex(PipelineError, "no decodable audio stream"):
+                extract_audio(source, root, CommandRunner(), lambda _: None,
+                              Config(source=str(source), output_dir=root))
+
     def test_truncated_cached_wav_is_not_a_checkpoint(self):
         with tempfile.TemporaryDirectory() as td:
             wav_path = Path(td) / "interrupted.wav"

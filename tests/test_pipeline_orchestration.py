@@ -8,10 +8,62 @@ from unittest.mock import patch
 import numpy as np
 
 from anime_dubber.characters import CharacterProfile
-from anime_dubber.core import CommandRunner, Config, Segment, analyze_only, run_pipeline
+from anime_dubber.core import (CommandRunner, Config, PipelineError, Segment, analyze_only,
+                               run_pipeline, transcribe_before_separation)
 
 
 class PipelineOrchestrationTests(unittest.TestCase):
+    def test_no_speech_in_original_tries_separated_audio(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            original = work / "original.wav"; vocals = work / "vocals.wav"
+            config = Config(source="video.mp4", output_dir=work)
+            with patch("anime_dubber.core.transcribe_audio", side_effect=[[], [Segment(0, 1, "Speech")]]) as asr, \
+                 patch("anime_dubber.core.separate_dialogue", return_value=(vocals, work / "bg.wav")):
+                segments = transcribe_before_separation(original, config, work, CommandRunner(), lambda _: None)
+            self.assertEqual([call.args[0] for call in asr.call_args_list], [original, vocals])
+            self.assertEqual(segments[0].text, "Speech")
+
+    def test_dub_publishes_both_subtitle_sets_before_separation_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); source = root / "video.mp4"; source.write_bytes(b"source")
+            audio = root / "audio.wav"; audio.write_bytes(b"audio")
+            published = []
+            runner = CommandRunner()
+            runner.artifact = lambda kind, path, _language: published.append((kind, Path(path)))
+            config = Config(source=str(source), output_dir=root / "out", source_language="es",
+                            target_language="en", translation="llm", review_before_dub=False)
+
+            def translate(rows, *_args):
+                rows[0].translated = "Hello"
+                return rows
+
+            with patch("anime_dubber.core.extract_audio", return_value=audio), \
+                 patch("anime_dubber.core.transcribe_audio", return_value=[Segment(0, 1, "Hola")]), \
+                 patch("anime_dubber.core.translate_with_llm", side_effect=translate), \
+                 patch("anime_dubber.core.separate_dialogue", side_effect=PipelineError("Demucs failed")):
+                with self.assertRaisesRegex(PipelineError, "Demucs failed"):
+                    run_pipeline(config, lambda _message: None, runner)
+            self.assertIn("source_srt", [kind for kind, _ in published])
+            self.assertIn("translated_srt", [kind for kind, _ in published])
+            self.assertTrue(next(path for kind, path in published if kind == "translated_srt").stat().st_size)
+
+    def test_empty_direct_translation_fails_without_publishing_empty_subtitles(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); source = root / "video.mp4"; source.write_bytes(b"source")
+            audio = root / "audio.wav"; audio.write_bytes(b"audio")
+            published = []
+            runner = CommandRunner()
+            runner.artifact = lambda kind, *_: published.append(kind)
+            config = Config(source=str(source), output_dir=root / "out", source_language="zh",
+                            target_language="en", translation="whisper", mode="subtitles")
+            with patch("anime_dubber.core.extract_audio", return_value=audio), \
+                 patch("anime_dubber.core.transcribe_audio", side_effect=[[Segment(0, 1, "你好")], []]):
+                with self.assertRaisesRegex(PipelineError, "Translation returned no usable dialogue"):
+                    run_pipeline(config, lambda _message: None, runner)
+            self.assertIn("chinese_srt", published)
+            self.assertNotIn("translated_srt", published)
+
     def test_analysis_keeps_subtitles_when_speaker_analysis_fails_after_audio_fallback(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -167,7 +219,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
             with patch("anime_dubber.core.download_source", return_value=video), \
                  patch("anime_dubber.core.extract_audio", return_value=audio), \
                  patch("anime_dubber.core.separate_dialogue", return_value=(vocals, bg)), \
-                 patch("anime_dubber.core.transcribe_audio", side_effect=[[], segs]), \
+                 patch("anime_dubber.core.transcribe_audio", return_value=segs), \
                  patch("anime_dubber.core.translate_with_llm", side_effect=fake_translate), \
                  patch("anime_dubber.core.list_macos_voices", return_value=["Alex", "Samantha"]), \
                  patch("anime_dubber.characters.analyze_characters", side_effect=fake_analyze), \

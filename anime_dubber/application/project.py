@@ -266,6 +266,32 @@ class ProjectStore:
         payload["updated_at"] = _now()
         _atomic_write(self.manifest_path, payload)
 
+    def invalidate_shared_source(self) -> None:
+        """Hide obsolete shared analysis when the video at an existing path changes."""
+        payload = self.load()
+        if not payload:
+            return
+        shared = {"source_video", "source_srt", "source_vtt", "chinese_srt", "chinese_vtt", "character_map"}
+        for kind in shared:
+            payload.setdefault("artifacts", {}).pop(kind, None)
+        payload["subtitles"] = {key: value for key, value in payload.get("subtitles", {}).items()
+                                if not key.startswith("source:")}
+        for dub in payload.get("dubs", []):
+            if dub.get("job_id") == payload.get("active_job_id"):
+                version_root = (self.output_dir / "versions" / str(dub.get("id") or "")).resolve()
+                for kind, artifact in list(payload["artifacts"].items()):
+                    if Path(str(artifact)).resolve().is_relative_to(version_root):
+                        payload["artifacts"].pop(kind, None)
+                dub["artifacts"] = {}
+                dub["warnings"] = []
+                payload["subtitles"] = {key: value for key, value in payload["subtitles"].items()
+                                        if not key.startswith(str(dub.get("id")) + ":")}
+        payload["analysis_fingerprints"] = {}
+        payload["analysis_revision"] = int(payload.get("analysis_revision") or 0) + 1
+        payload["source_language"] = None
+        payload["updated_at"] = _now()
+        _atomic_write(self.manifest_path, payload)
+
     @staticmethod
     def _update_analysis_fingerprint(payload: dict, kind: str, path: str) -> None:
         source = Path(path)

@@ -403,6 +403,7 @@ final class AppState: ObservableObject {
 
         let params: [String: Any] = [
             "source": project.source,
+            "verify_setup": true,
             "output_dir": project.outputDir,
             "series_id": project.seriesID,
             "mode": outputMode.rawValue,

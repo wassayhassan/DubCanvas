@@ -413,6 +413,57 @@ def ffprobe_duration(path: Path, runner: CommandRunner) -> float:
         raise PipelineError(f"Could not determine media duration for {path}") from e
 
 
+def validate_media_streams(path: Path, runner: CommandRunner, *, require_video: bool = True) -> None:
+    """Reject unusable inputs and incomplete renders before publishing them."""
+    probe = runner.run([
+        "ffprobe", "-v", "error", "-show_entries", "stream=codec_type:format=duration",
+        "-of", "json", str(path),
+    ])
+    try:
+        data = json.loads(probe.stdout or "{}")
+        streams = {row.get("codec_type") for row in data.get("streams", [])}
+        duration = float(data.get("format", {}).get("duration", 0))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise PipelineError(f"Could not inspect media streams in {path.name}") from exc
+    if "audio" not in streams:
+        raise PipelineError(f"{path.name} has no decodable audio stream. Choose a video with audible dialogue.")
+    if require_video and "video" not in streams:
+        raise PipelineError(f"{path.name} has no decodable video stream. Choose a video file, not an audio-only file.")
+    if not math.isfinite(duration) or duration <= 0.05:
+        raise PipelineError(f"{path.name} has no usable media duration.")
+
+
+def validate_source_cache(video: Path, work_dir: Path, progress: ProgressCallback) -> bool:
+    """Invalidate every derived checkpoint when the bytes behind a source path change."""
+    stat = video.stat()
+    with video.open("rb") as handle:
+        head = handle.read(65536)
+        handle.seek(max(0, stat.st_size - 65536))
+        tail = handle.read(65536)
+    signature = {
+        "path": str(video.resolve()), "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "sample": hashlib.sha256(head + tail).hexdigest(),
+    }
+    marker = work_dir / "source_fingerprint.json"
+    try:
+        previous = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        previous = None
+    if previous != signature:
+        for child in work_dir.iterdir():
+            if child == marker or child.resolve() == video.resolve():
+                continue
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        if previous is not None:
+            progress("Source video changed; rebuilding cached audio, transcript, and voices…")
+        _atomic_json_write(marker, signature)
+    return previous != signature
+
+
 def atempo_chain(factor: float) -> str:
     if factor <= 0:
         raise ValueError("tempo factor must be > 0")
@@ -1143,6 +1194,7 @@ def download_source(source: str, work_dir: Path, runner: CommandRunner, progress
 
 
 def extract_audio(video: Path, work_dir: Path, runner: CommandRunner, progress: ProgressCallback, config: Config) -> Path:
+    validate_media_streams(video, runner)
     audio = work_dir / "original.wav"
     if config.resume and _complete_wav(audio) and not config.force:
         return audio
@@ -2016,16 +2068,18 @@ def _mux_to_temp(video: Path, audio: Path, temp: Path, final: Path, runner: Comm
             "-c:v", codec, "-b:v", "6M", "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart", "-shortest", str(temp),
         ])
+        validate_media_streams(temp, runner)
         temp.replace(final)
         return
     cp = runner.run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(video), "-i", str(audio),
-        "-map", "0:v:0?", "-map", "1:a:0",
+        "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart",
         "-shortest", str(temp),
     ], check=False)
     if cp.returncode == 0:
+        validate_media_streams(temp, runner)
         temp.replace(final)
         return
     # Fallback for source codecs that cannot be copied into MP4.
@@ -2033,10 +2087,11 @@ def _mux_to_temp(video: Path, audio: Path, temp: Path, final: Path, runner: Comm
     runner.run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(video), "-i", str(audio),
-        "-map", "0:v:0?", "-map", "1:a:0",
+        "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", codec, "-b:v", "6M", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", "-shortest", str(temp),
     ])
+    validate_media_streams(temp, runner)
     temp.replace(final)
 
 
@@ -2105,6 +2160,41 @@ def transcribe_source_audio(
     return segments, dialogue
 
 
+def speaker_analysis_audio(vocals: Path, original: Path, progress: ProgressCallback) -> Path:
+    """Avoid treating a silent or invalid separation stem as a speaker reference."""
+    if vocals == original:
+        return original
+    try:
+        import soundfile as sf
+        import numpy as np
+        with sf.SoundFile(str(vocals)) as handle:
+            if handle.frames <= 0 or handle.samplerate <= 0:
+                raise ValueError("empty stem")
+            for offset in np.linspace(0, max(0, handle.frames - handle.samplerate), 12, dtype=int):
+                handle.seek(int(offset))
+                sample = handle.read(min(handle.samplerate, 16000), dtype="float32")
+                if sample.size and float(np.max(np.abs(sample))) > 0.001:
+                    return vocals
+    except (OSError, RuntimeError, ValueError, ImportError):
+        pass
+    progress("Separated dialogue is silent or unreadable; analyzing speakers from the original soundtrack…")
+    return original
+
+
+def transcribe_before_separation(
+    audio: Path, config: Config, work: Path, runner: CommandRunner, progress: ProgressCallback,
+) -> List[Segment]:
+    """Publishable source speech comes first; separation is a last ASR recovery path."""
+    segments = transcribe_audio(audio, config, work, runner, progress, task="transcribe")
+    if segments or config.mode == "subtitles":
+        return segments
+    progress("No speech found in the original soundtrack; trying separated dialogue…")
+    vocals, _ = separate_dialogue(audio, work, runner, progress, config)
+    separated_work = work / "separated_asr"
+    separated_work.mkdir(parents=True, exist_ok=True)
+    return transcribe_audio(vocals, config, separated_work, runner, progress, task="transcribe")
+
+
 def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
     progress = progress or print
     runner = runner or CommandRunner(progress)
@@ -2112,22 +2202,26 @@ def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, ru
     key = source_key(config.source, out)
     work = out / ".anime_dubber_work" / key; work.mkdir(parents=True, exist_ok=True)
     video = download_source(config.source, work, runner, progress)
+    if validate_source_cache(video, work, progress):
+        changed = getattr(runner, "source_changed", None)
+        if changed:
+            changed()
     callback = getattr(runner, "artifact", None)
     if callback:
         callback("source_video", video, config.source_language)
     audio = extract_audio(video, work, runner, progress, config)
-    vocals, _background = separate_dialogue(audio, work, runner, progress, config)
-    segments, transcript_audio = transcribe_source_audio(vocals, audio, config, work, runner, progress)
+    segments = transcribe_before_separation(audio, config, work, runner, progress)
     if not segments:
         raise PipelineError("No speech was recognized in the original soundtrack. Check that the source video has audible dialogue.")
     zh_srt = out / f"{key}_{config.source_language}.srt"; write_srt(segments, zh_srt, translated=False)
     source_kind = "chinese" if config.source_language == "zh" else "source"
     if callback:
         callback(f"{source_kind}_srt", zh_srt, config.source_language)
+    vocals, _background = separate_dialogue(audio, work, runner, progress, config)
     from .characters import analyze_characters, write_character_map
     char_path = _character_map_path(config, out, key)
     profiles, payload = analyze_characters(
-        transcript_audio, segments, work, out, runner, progress,
+        speaker_analysis_audio(vocals, audio, progress), segments, work, out, runner, progress,
         resume=config.resume, force=config.force, max_speakers=config.max_speakers,
         speaker_threshold=config.speaker_threshold, series_id=config.series_id or key,
         available_voices=list_macos_voices(), override_path=char_path,
@@ -2158,18 +2252,18 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     work.mkdir(parents=True, exist_ok=True)
 
     video = download_source(config.source, work, runner, progress)
+    if validate_source_cache(video, work, progress):
+        changed = getattr(runner, "source_changed", None)
+        if changed:
+            changed()
+        for path in version_dir.glob("*.timing-fixes.json"):
+            path.unlink()
+        for path in version_dir.glob("*.review-approval.json"):
+            path.unlink()
     publish("source_video", video, config.source_language)
     audio = extract_audio(video, work, runner, progress, config)
-
-    if config.mode == "dub":
-        vocals, background = separate_dialogue(audio, work, runner, progress, config)
-        transcript_audio = vocals
-    else:
-        vocals = audio
-        background = audio
-        transcript_audio = audio
-
-    zh_segments, transcript_audio = transcribe_source_audio(transcript_audio, audio, config, work, runner, progress)
+    zh_segments = transcribe_before_separation(audio, config, work, runner, progress)
+    transcript_audio = audio
     if not zh_segments:
         raise PipelineError("No speech was recognized in the original soundtrack. Check that the source video has audible dialogue; no dub or empty subtitle file was produced.")
     source_kind = "chinese" if config.source_language == "zh" else "source"
@@ -2208,6 +2302,9 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         segments = [Segment(s.start, s.end, s.text, s.text) for s in en_whisper]
     else:
         raise PipelineError(f"Unsupported translation mode: {translation_mode}")
+
+    if not segments or any(not (s.translated or "").strip() for s in segments):
+        raise PipelineError("Translation returned no usable dialogue. Source subtitles were saved; retry translation with a different model or provider.")
 
     fixes_path = version_dir / f"{key}_{config.target_language}.timing-fixes.json"
     try:
@@ -2310,6 +2407,10 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         progress(f"DONE: {en_srt}")
         return results
 
+    # Both subtitle sets are durable before optional separation and voice work.
+    # A Demucs failure can be retried without losing the transcript or translation.
+    vocals, background = separate_dialogue(audio, work, runner, progress, config)
+
     profiles = []
     profile_map: Dict[str, dict] = {}
     char_path = _character_map_path(config, out, key)
@@ -2318,7 +2419,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         # Analyze against source timestamps. If Whisper-direct translation changed segmentation,
         # transfer speaker/style labels to the closest English segment by midpoint overlap.
         profiles, payload = analyze_characters(
-            transcript_audio, zh_segments, work, out, runner, progress,
+            speaker_analysis_audio(vocals, audio, progress), zh_segments, work, out, runner, progress,
             resume=config.resume, force=config.force, max_speakers=config.max_speakers,
             speaker_threshold=config.speaker_threshold, series_id=config.series_id or key,
             available_voices=list_macos_voices(), override_path=char_path,

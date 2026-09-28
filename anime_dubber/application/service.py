@@ -24,6 +24,8 @@ from ..core import (
     list_macos_voices,
     run_pipeline,
     _atomic_json_write,
+    is_url,
+    validate_media_streams,
 )
 from ..languages import TARGET_LANGUAGES
 from .events import AppEvent, progress_to_event
@@ -325,6 +327,50 @@ class ApplicationService:
             data["elevenlabs_api_key"] = "<redacted>"
         return data
 
+    def validate_job_setup(self, config: Config, *, analysis: bool = False) -> None:
+        """Reject missing selected providers before a long job creates a version."""
+        from ..providers.asr import resolve_asr_provider
+        caps = self.capabilities()["providers"]
+        missing = [tool for tool in ("ffmpeg", "ffprobe") if not shutil.which(tool)]
+        if (analysis or config.mode == "dub") and not caps["stems"]["demucs"]:
+            missing.append("Demucs dialogue separation")
+        selected_asr = resolve_asr_provider(config.asr_provider)
+        if not caps["asr"].get(selected_asr, False):
+            missing.append(f"{selected_asr} speech recognition")
+        if not analysis and config.source_language != config.target_language:
+            provider = config.translation
+            if provider == "llm" and not caps["translation"]["mlx_llm"]:
+                missing.append("MLX translation model runtime")
+            elif provider == "ollama" and not caps["translation"]["ollama"]:
+                missing.append("Ollama translation runtime")
+            elif provider == "auto" and config.target_language != "en" and not (
+                caps["translation"]["mlx_llm"] or caps["translation"]["ollama"]
+            ):
+                missing.append("translation model runtime")
+        if config.mode == "dub" and not analysis:
+            voices = caps["tts"]
+            if config.target_language != "en" and config.tts_engine in {"auto", "chatterbox"}:
+                if not voices["chatterbox_multilingual"] and not (
+                    config.tts_engine == "auto" and config.elevenlabs_api_key
+                ):
+                    missing.append("Chatterbox Multilingual or ElevenLabs API key")
+            elif config.tts_engine not in {"auto", "elevenlabs"} and not voices.get(config.tts_engine):
+                missing.append(f"{config.tts_engine} voice engine")
+            if config.tts_engine == "elevenlabs" and not config.elevenlabs_api_key:
+                missing.append("ElevenLabs API key")
+            if config.target_language == "en" and config.tts_engine == "auto" and not (
+                voices["chatterbox"] or voices["kokoro"] or voices["macos"] or
+                (voices["piper"] and config.piper_model) or config.elevenlabs_api_key
+            ):
+                missing.append("usable English voice engine")
+        if missing:
+            raise ValueError("Setup needed before processing: " + ", ".join(missing))
+        if not is_url(config.source):
+            source_file = Path(config.source).expanduser()
+            if not source_file.is_file():
+                raise ValueError("Source video is missing. Choose the file again before processing.")
+            validate_media_streams(source_file, CommandRunner())
+
     @staticmethod
     def _check_external_job(project: dict) -> None:
         if project.get("status") != "running":
@@ -342,6 +388,8 @@ class ApplicationService:
 
     def start_job(self, payload: Dict[str, Any], *, analysis: bool = False) -> str:
         config = config_from_dict(payload)
+        if payload.get("verify_setup"):
+            self.validate_job_setup(config, analysis=analysis)
         store = ProjectStore(config.output_dir, config.source)
         if not config.series_id:
             config.series_id = str(store.load().get("series_id") or "")
@@ -535,6 +583,7 @@ class ApplicationService:
                                        language=language or config.target_language)
             self._emit(AppEvent("artifact", {"kind": kind, "path": str(path)}, record.id))
         runner.artifact = publish
+        runner.source_changed = store.invalidate_shared_source if store else lambda: None
         runner.duration = lambda seconds: store.set_duration(config.version_id, seconds) if store and config.version_id else None
         self._emit(AppEvent("job_started", {"kind": record.kind}, record.id))
 
