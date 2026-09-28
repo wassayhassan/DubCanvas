@@ -14,6 +14,46 @@ from anime_dubber.core import ReviewRequired
 
 
 class ApplicationServiceTests(unittest.TestCase):
+    def test_replacing_source_hides_old_shared_analysis_but_keeps_versions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ProjectStore(Path(temp), "video.mp4")
+            store.create(source="video.mp4", name="Video")
+            store.begin(job_id="old", kind="run", dub_id="old_dub",
+                        config={"source": "video.mp4", "output_dir": temp, "target_language": "en"})
+            source_srt = Path(temp) / "source.srt"; source_srt.write_text("old text")
+            translated = Path(temp) / "translation.srt"; translated.write_text("old translation")
+            store.publish_artifact("source_srt", str(source_srt), language="en")
+            store.publish_artifact("translated_srt", str(translated), dub_id="old_dub",
+                                   version_id="old_dub", language="en")
+            store.finish(status="completed", dub_id="old_dub")
+            store.begin(job_id="new", kind="run", dub_id="new_dub",
+                        config={"source": "video.mp4", "output_dir": temp, "target_language": "en"})
+            old_revision = store.load()["analysis_revision"]
+            store.invalidate_shared_source()
+            project = store.load()
+            self.assertNotIn("source_srt", project["artifacts"])
+            self.assertFalse(any(key.startswith("source:") for key in project["subtitles"]))
+            self.assertEqual(project["dubs"][0]["artifacts"]["translated_srt"], str(translated))
+            self.assertEqual(project["dubs"][1]["artifacts"], {})
+            self.assertGreater(project["analysis_revision"], old_revision)
+
+    def test_selected_missing_speech_provider_is_rejected_before_version_creation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            service = ApplicationService()
+            store = ProjectStore(Path(temp), "video.mp4")
+            store.create(source="video.mp4", name="Video")
+            providers = {"asr": {"mlx_whisper": False, "faster_whisper": False},
+                         "translation": {"mlx_llm": True, "ollama": False},
+                         "tts": {"chatterbox": True, "chatterbox_multilingual": False,
+                                 "kokoro": False, "macos": True, "piper": False},
+                         "stems": {"demucs": True}}
+            with patch.object(service, "capabilities", return_value={"providers": providers}), \
+                 patch("anime_dubber.application.service.shutil.which", return_value="/usr/bin/tool"):
+                with self.assertRaisesRegex(ValueError, "speech recognition"):
+                    service.start_job({"source": "video.mp4", "output_dir": temp,
+                                       "verify_setup": True, "asr": {"provider": "mlx_whisper"}})
+            self.assertEqual(store.load()["dubs"], [])
+
     def test_dead_backend_job_becomes_resumable_without_losing_subtitles(self):
         with tempfile.TemporaryDirectory() as temp:
             service = ApplicationService()
