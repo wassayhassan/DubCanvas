@@ -13,6 +13,29 @@ from anime_dubber.core import (CommandRunner, Config, PipelineError, Segment, an
 
 
 class PipelineOrchestrationTests(unittest.TestCase):
+    def test_untranslated_chinese_blocks_dub_before_subtitle_publish_or_tts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            video = root / "video.mp4"; video.write_bytes(b"video")
+            audio = root / "audio.wav"; audio.write_bytes(b"audio")
+            cfg = Config(source=str(video), output_dir=root / "out", mode="dub",
+                         source_language="zh", target_language="en", translation="llm")
+            published = []
+            runner = CommandRunner()
+            runner.artifact = lambda kind, path, language: published.append(kind)
+            with patch("anime_dubber.core.download_source", return_value=video), \
+                 patch("anime_dubber.core.extract_audio", return_value=audio), \
+                 patch("anime_dubber.core.transcribe_before_separation",
+                       return_value=([Segment(30.6, 33.4, "天下武林,门派如林")], audio)), \
+                 patch("anime_dubber.core.translate_with_llm",
+                       side_effect=lambda rows, *_: [Segment(s.start, s.end, s.text, s.text) for s in rows]), \
+                 patch("anime_dubber.core.separate_dialogue") as separation:
+                with self.assertRaisesRegex(PipelineError, "Translation is incomplete"):
+                    run_pipeline(cfg, lambda _: None, runner)
+            self.assertIn("chinese_srt", published)
+            self.assertNotIn("translated_srt", published)
+            separation.assert_not_called()
+
     def test_no_speech_in_original_tries_separated_audio(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)

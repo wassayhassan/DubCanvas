@@ -6,7 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from anime_dubber.application.service import ApplicationService
-from anime_dubber.core import Config, Segment, run_pipeline, translate_with_llm, LLM_MODEL, CommandRunner, _version_profiles
+from anime_dubber.core import (Config, Segment, run_pipeline, translate_with_llm,
+                               translate_with_ollama_provider, LLM_MODEL, CommandRunner,
+                               PipelineError, _version_profiles)
 from anime_dubber.application.service import config_from_dict
 import hashlib
 import json
@@ -15,6 +17,49 @@ import types
 
 
 class ProjectVersionsTests(unittest.TestCase):
+    def test_untranslated_cache_is_repaired_instead_of_dubbed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = Config(source="source.mp4", output_dir=Path(temp), translation="llm")
+            signature = hashlib.sha1(json.dumps({
+                "model": LLM_MODEL, "target_language": "en", "context": cfg.context,
+                "glossary": cfg.glossary, "source_text": ["天下武林,门派如林"],
+            }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
+            cache = Path(temp) / f"translations_llm_{signature}.json"
+            cache.write_text(json.dumps({"0": "天下武林,门派如林"}, ensure_ascii=False), encoding="utf-8")
+            responses = iter(['[{"id": 0, "text": "The martial world has countless sects."}]'])
+            fake = types.SimpleNamespace(
+                load=lambda _: (object(), types.SimpleNamespace(chat_template=None)),
+                generate=lambda *_args, **_kwargs: next(responses))
+            with patch.dict(sys.modules, {"mlx_lm": fake}):
+                result = translate_with_llm([Segment(0, 2, "天下武林,门派如林")], cfg,
+                                            Path(temp), CommandRunner(), lambda _: None)
+            self.assertEqual(result[0].translated, "The martial world has countless sects.")
+            self.assertEqual(json.loads(cache.read_text(encoding="utf-8"))["0"], result[0].translated)
+
+    def test_ollama_never_caches_untranslated_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = Config(source="source.mp4", output_dir=Path(temp), translation="ollama")
+            with patch("anime_dubber.providers.translation.translate_with_ollama",
+                       return_value={0: "天下武林,门派如林"}), \
+                 patch("anime_dubber.providers.translation.ollama_generate",
+                       return_value="The martial world has countless sects."):
+                result = translate_with_ollama_provider([Segment(0, 2, "天下武林,门派如林")],
+                                                        cfg, Path(temp), CommandRunner(), lambda _: None)
+            self.assertEqual(result[0].translated, "The martial world has countless sects.")
+            self.assertNotIn("天下武林", next(Path(temp).glob("translations_ollama_*.json")).read_text(encoding="utf-8"))
+
+    def test_translation_failure_stops_before_dub(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = Config(source="source.mp4", output_dir=Path(temp), translation="llm")
+            fake = types.SimpleNamespace(
+                load=lambda _: (object(), types.SimpleNamespace(chat_template=None)),
+                generate=lambda *_args, **_kwargs: '[{"id": 0, "text": "唐门"}]')
+            with patch.dict(sys.modules, {"mlx_lm": fake}):
+                with self.assertRaisesRegex(PipelineError, "Translation failed for line 1"):
+                    translate_with_llm([Segment(0, 1, "唐门")], cfg, Path(temp),
+                                       CommandRunner(), lambda _: None)
+            self.assertFalse(any(Path(temp).glob("translations_llm_*.json")))
+
     def test_voice_choices_are_version_scoped(self):
         shared = types.SimpleNamespace(id="speaker_1", kokoro_voice="af_heart",
                                        to_dict=lambda: {"id": "speaker_1", "kokoro_voice": "af_heart"})

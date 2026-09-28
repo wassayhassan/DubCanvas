@@ -109,7 +109,7 @@ class ReviewTests(unittest.TestCase):
                 result = run_pipeline(cfg, lambda _: None, CommandRunner())
                 resumed = run_pipeline(cfg, lambda _: None, CommandRunner())
             self.assertEqual(candidate.call_count, 2)
-            self.assertEqual(tested, [original, "The Tang Sect", "Tang Sect", "Tang Sect"])
+            self.assertEqual(tested, [original, original, "The Tang Sect", "Tang Sect", "Tang Sect"])
             self.assertIn("Tang Sect", result["translated_srt"].read_text(encoding="utf-8"))
             self.assertIn("Tang Sect", resumed["translated_srt"].read_text(encoding="utf-8"))
             fixes = json.loads(next((base / "out" / "versions" / "auto_fit").glob("*.timing-fixes.json")).read_text(encoding="utf-8"))
@@ -156,7 +156,7 @@ class ReviewTests(unittest.TestCase):
                  patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_: dest.write_bytes(b"video")):
                 result = run_pipeline(cfg, lambda _: None, CommandRunner())
                 run_pipeline(cfg, lambda _: None, CommandRunner())
-            self.assertEqual(candidate.call_count, 3)
+            self.assertEqual(candidate.call_count, 0)
             self.assertEqual(calls, [("The once famous Tang Sect", 1.0),
                                      ("The once famous Tang Sect", 1.5),
                                      ("The once famous Tang Sect", 1.5)])
@@ -218,7 +218,7 @@ class ReviewTests(unittest.TestCase):
                  patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_: dest.write_bytes(b"video")):
                 result = run_pipeline(cfg, warnings.append, runner)
                 resumed = run_pipeline(cfg, warnings.append, runner)
-            self.assertEqual(generated, ["A long greeting"] * 4)
+            self.assertEqual(generated, ["A long greeting"] * 5)
             self.assertTrue(any("cannot fit" in message for message in warnings))
             self.assertIn("A long greeting", result["translated_srt"].read_text(encoding="utf-8"))
             self.assertTrue(resumed["dubbed_video"].exists())

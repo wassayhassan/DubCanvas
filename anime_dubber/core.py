@@ -638,6 +638,27 @@ def _response_text(response) -> str:
     return str(response)
 
 
+def translation_is_usable(source_text: str, translated: str, source_language: str,
+                          target_language: str) -> bool:
+    """Reject missing or copied source speech before it enters a translation cache."""
+    value = str(translated or "").strip()
+    if not value or value.startswith(("```", "{", "[")) or "\n" in value or len(value) > 500:
+        return False
+    from .review import LATIN_LANGUAGES, _wrong_target_script, flags_for
+    if _wrong_target_script(value, target_language, source_text, source_language):
+        return False
+    if source_language == target_language:
+        return True
+    cue = {"text": source_text, "start": 0.0, "end": 10.0}
+    target = {"text": value, "start": 0.0, "end": 10.0}
+    invalid = {"untranslated_chinese", "untranslated_source", "untranslated_text", "empty_text"}
+    if (source_language in LATIN_LANGUAGES and target_language in LATIN_LANGUAGES
+            and len(value) <= 4):
+        # Short interjections and names can legitimately be shared by languages.
+        invalid.remove("untranslated_text")
+    return not invalid.intersection(flags_for(cue, target, target_language, source_language))
+
+
 def translate_with_llm(
     segments: List[Segment],
     config: Config,
@@ -679,7 +700,9 @@ def translate_with_llm(
                 if isinstance(loaded, dict):
                     valid = {str(i): value for i, value in loaded.items()
                              if str(i).isdigit() and int(i) < len(segments)
-                             and isinstance(value, str) and bool(value.strip())}
+                             and isinstance(value, str)
+                             and translation_is_usable(segments[int(i)].text, value,
+                                                       config.source_language, config.target_language)}
                     cache.update(valid)
                     if candidate == legacy_path:
                         legacy_count = len(valid)
@@ -739,7 +762,9 @@ def translate_with_llm(
         parsed: Dict[int, str] = {}
         for attempt in range(3):
             text = generate_text(prompt)
-            parsed = parse_translation_response(text, ids)
+            parsed = {i: value for i, value in parse_translation_response(text, ids).items()
+                      if translation_is_usable(segments[i].text, value,
+                                               config.source_language, config.target_language)}
             if len(parsed) == len(ids):
                 break
             prompt += "\nYour previous response was malformed. Return the exact requested JSON array and nothing else."
@@ -750,14 +775,20 @@ def translate_with_llm(
                 f"Translate this {source} dialogue into concise natural {target}. Return ONLY the translation, no quotes or explanation.\n"
                 f"Context: {config.context}\nGlossary: {gl}\n{source}: {segments[i].text}"
             )
-            raw = generate_text(one_prompt, max_tokens=256).strip()
-            raw = re.sub(r"^```.*?\n|\n```$", "", raw, flags=re.S).strip().strip('"')
-            if not raw:
-                raw = segments[i].text
-            parsed[i] = raw.splitlines()[0].strip() if "\n" in raw else raw
+            for _ in range(2):
+                raw = generate_text(one_prompt, max_tokens=256).strip()
+                value = re.sub(r"^```.*?\n|\n```$", "", raw, flags=re.S).strip().strip('"')
+                if translation_is_usable(segments[i].text, value,
+                                         config.source_language, config.target_language):
+                    parsed[i] = value
+                    break
+                one_prompt += f"\nYour previous answer was invalid. Write only {target}; do not copy the source."
+            if i not in parsed:
+                raise PipelineError(f"Translation failed for line {i + 1}. The source subtitles are saved. "
+                                    "Retry with a stronger translation model; no incorrect dub will be generated.")
 
         for i in ids:
-            cache[str(i)] = parsed.get(i, segments[i].text)
+            cache[str(i)] = parsed[i]
             segments[i].translated = cache[str(i)]
         _atomic_json_write(cache_path, cache)
         done += len(ids)
@@ -797,7 +828,9 @@ def translate_with_ollama_provider(
             if isinstance(loaded, dict):
                 cache = {str(i): value for i, value in loaded.items()
                          if str(i).isdigit() and int(i) < len(segments)
-                         and isinstance(value, str) and bool(value.strip())}
+                         and isinstance(value, str)
+                         and translation_is_usable(segments[int(i)].text, value,
+                                                   config.source_language, config.target_language)}
         except Exception:
             cache = {}
 
@@ -839,7 +872,10 @@ def translate_with_ollama_provider(
 
     def save_batch(ids: List[int], values: Dict[int, str]) -> None:
         for idx in ids:
-            cache[str(idx)] = values.get(idx) or segments[idx].text
+            value = values.get(idx, "")
+            if translation_is_usable(segments[idx].text, value,
+                                     config.source_language, config.target_language):
+                cache[str(idx)] = value
         _atomic_json_write(cache_path, cache)
 
     try:
@@ -857,7 +893,21 @@ def translate_with_ollama_provider(
         raise PipelineError(str(e)) from e
 
     for idx in pending:
-        value = translated.get(idx) or segments[idx].text
+        value = translated.get(idx, "")
+        if not translation_is_usable(segments[idx].text, value,
+                                     config.source_language, config.target_language):
+            from .providers.translation import ollama_generate
+            for _ in range(2):
+                runner.check_cancel()
+                value = ollama_generate(base_url=config.ollama_url, model=config.ollama_model,
+                                        prompt=single_prompt(idx) +
+                                        f"\nWrite only {target}; do not copy the {source} source.", timeout=180).strip().strip('"')
+                if translation_is_usable(segments[idx].text, value,
+                                         config.source_language, config.target_language):
+                    break
+            else:
+                raise PipelineError(f"Translation failed for line {idx + 1}. The source subtitles are saved. "
+                                    "Retry with a stronger translation model; no incorrect dub will be generated.")
         cache[str(idx)] = value
         segments[idx].translated = value
     _atomic_json_write(cache_path, cache)
@@ -2318,8 +2368,21 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     else:
         raise PipelineError(f"Unsupported translation mode: {translation_mode}")
 
-    if not segments or any(not (s.translated or "").strip() for s in segments):
-        raise PipelineError("Translation returned no usable dialogue. Source subtitles were saved; retry translation with a different model or provider.")
+    if not segments:
+        raise PipelineError("Translation returned no usable dialogue. Source subtitles were saved; retry with a different model or provider.")
+
+    def require_complete_translation() -> None:
+        invalid = [i + 1 for i, s in enumerate(segments)
+                   if not translation_is_usable(s.text, s.translated,
+                                                config.target_language if translation_mode == "whisper"
+                                                else config.source_language, config.target_language)]
+        if invalid:
+            examples = ", ".join(map(str, invalid[:8]))
+            raise PipelineError(f"Translation is incomplete or still in the source language at lines {examples}. "
+                                "Source subtitles were saved. Retry with a stronger translation model; "
+                                "no incorrect dub will be generated.")
+
+    require_complete_translation()
 
     fixes_path = version_dir / f"{key}_{config.target_language}.timing-fixes.json"
     try:
@@ -2334,6 +2397,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         if (isinstance(fix, dict) and fix.get("source") == seg.text
                 and fix.get("original") == seg.translated and fix.get("replacement")):
             seg.translated = fix["replacement"]
+    require_complete_translation()
 
     # Subtitles are usable output in their own right. Publish them before voice
     # analysis so a slow or failed speaker pass cannot hold back the files.
@@ -2399,6 +2463,8 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
                             else row.get("suggestion"))
                 proposed = str(proposed or "").strip()
                 if (proposed and proposed.casefold() != str(row.get("translation", "")).casefold()
+                        and translation_is_usable(segments[int(row["cue"]) - 1].text, proposed,
+                                                  config.source_language, config.target_language)
                         and (reasons & {"non_chinese_source", "source_language_mismatch", "mixed_script_in_source",
                                         "untranslated_chinese", "untranslated_source", "untranslated_text", "literal_idiom"})):
                     decisions[int(row["cue"]) - 1] = proposed
@@ -2411,6 +2477,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
             progress("Warning: stronger local review unavailable; continuing with translated subtitles")
         for idx, value in (decisions or {}).items():
             segments[idx].translated = value
+        require_complete_translation()
         if decisions:
             write_srt(segments, en_srt, translated=True)
             write_vtt(segments, en_vtt, translated=True)
@@ -2490,6 +2557,24 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
                                           **({"max_tempo": saved_tempo} if saved_tempo > 1.0 else {})))
         except TimingOverlapError as issue:
             original = seg.translated
+            # Preserve the existing translation whenever a modest speed change
+            # can fit it; rewriting can silently change names or meaning.
+            if issue.available > 0 and issue.duration <= issue.available * 1.5 + 0.03:
+                try:
+                    clip = prepare_tts_clip(seg, i, tts_dir, config, runner, progress,
+                                            profile=profile, next_start=next_start, max_tempo=1.5)
+                except TimingOverlapError:
+                    pass  # Measure the rendered clip; try a shorter line below.
+                else:
+                    clips.append(clip)
+                    timing_fixes[str(i + 1)] = {"source": seg.text, "original": original,
+                                                "replacement": original,
+                                                "available": round(issue.available, 3),
+                                                "max_tempo": 1.5}
+                    _atomic_json_write(fixes_path, timing_fixes)
+                    publish("timing_fixes", fixes_path, config.target_language)
+                    progress(f"Fitted line {i + 1} by speeding speech up to 1.5×")
+                    continue
             rejected = [original]
             measured_options = [(original, issue.duration)]
             latest_issue = issue
