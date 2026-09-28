@@ -5,6 +5,7 @@ import SwiftUI
 struct ProjectWorkspaceView: View {
     @EnvironmentObject private var state: AppState
     @State private var showingComparison = false
+    @State private var showingDeleteConfirmation = false
     @State private var sourcePlayer: AVPlayer?
 
     var body: some View {
@@ -30,6 +31,15 @@ struct ProjectWorkspaceView: View {
             if let project = state.currentProject {
                 DubComparisonView(project: project).frame(minWidth: 880, minHeight: 640)
             }
+        }
+        .confirmationDialog("Delete \(state.currentProject?.displayName ?? "project")?", isPresented: $showingDeleteConfirmation) {
+            if let project = state.currentProject {
+                Button("Delete Project and Generated Files", role: .destructive) {
+                    state.deleteProject(project)
+                }
+            }
+        } message: {
+            Text("Subtitles, dubs, cached media, and processing history will be removed. Your original video file stays on your Mac. This cannot be undone.")
         }
         .onAppear { if let project = state.currentProject { loadSource(project) } }
         .onChange(of: state.selectedProjectID) { _, _ in
@@ -74,11 +84,25 @@ struct ProjectWorkspaceView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+            .disabled(project.status == "running" || state.activeJobID != nil)
+            Menu {
+                Button("Project Settings") { state.selection = .projectSettings }
+                Divider()
+                Button("Delete Project…", role: .destructive) {
+                    showingDeleteConfirmation = true
+                }
+                .disabled(project.status == "running" || state.deletingProjectID != nil)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .help("Project actions")
         }
     }
 
     private func overview(_ project: ProjectSummary) -> some View {
         VStack(alignment: .leading, spacing: 20) {
+            nextStep(project)
             if !state.jobIssue.isEmpty {
                 GroupBox("Needs attention") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -88,23 +112,8 @@ struct ProjectWorkspaceView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if project.status == "running" || (state.jobStartPending && project.id == state.selectedProjectID) {
-                GroupBox("Project activity") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label(state.stageDetail.isEmpty ? project.stageTitle : state.stageDetail, systemImage: "hourglass")
-                        if let fraction = state.progressFraction ?? project.progress {
-                            ProgressView(value: fraction)
-                            Text("Current step: \(fraction, format: .percent.precision(.fractionLength(0)))")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else { ProgressView() }
-                        if !state.downloadDetail.isEmpty { Text(state.downloadDetail).font(.caption) }
-                        Text("Completed subtitles are available below while voices and video continue processing.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        if state.activeJobID != nil {
-                            Button("Pause and keep completed work") { state.cancelActiveJob() }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }
+            if let error = state.projectDeletionError {
+                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 16) {
@@ -116,14 +125,6 @@ struct ProjectWorkspaceView: View {
                     sharedAnalysis(project)
                 }
             }
-            HStack {
-                Button("View Subtitles") { state.selection = .subtitles }
-                Button("View Dubs") { state.selection = .dubs }
-            }
-            if project.status == "failed", let error = project.lastError {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-            }
             subtitles(project)
             dubs(project)
             DisclosureGroup("Project files and settings") {
@@ -131,6 +132,89 @@ struct ProjectWorkspaceView: View {
                 Button("Project Settings") { state.selection = .projectSettings }
                 Button("Speakers & Voices") { state.selection = .characters }
             }
+        }
+    }
+
+    private func nextStep(_ project: ProjectSummary) -> some View {
+        let latest = project.dubs.first
+        let hasSubtitles = project.subtitles.contains { set in
+            set.artifacts["translated_srt"] != nil || set.artifacts["source_srt"] != nil || set.artifacts["chinese_srt"] != nil
+        }
+        return GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                if project.status == "running" || state.jobStartPending {
+                    Label("Your project is processing", systemImage: "hourglass")
+                        .font(.title2.bold())
+                    Text(project.stageTitle.isEmpty ? "Preparing your video…" : project.stageTitle)
+                        .foregroundStyle(.secondary)
+                    if let fraction = state.progressFraction ?? project.progress {
+                        ProgressView(value: fraction)
+                        Text("Current step: \(fraction, format: .percent.precision(.fractionLength(0)))")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else { ProgressView() }
+                    if hasSubtitles {
+                        Label("Subtitles are ready. You can view or save them while the dub continues.", systemImage: "captions.bubble.fill")
+                        Button("View Subtitles") { state.selection = .subtitles }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        Text("Source subtitles appear after speech recognition; translated subtitles appear before voices are generated.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    if state.activeJobID != nil {
+                        Button("Pause and keep completed work") { state.cancelActiveJob() }
+                    }
+                } else if let latest, latest.status == "failed" || latest.status == "paused" || latest.status == "cancelled" {
+                    Label("This dub needs attention", systemImage: "exclamationmark.triangle.fill")
+                        .font(.title2.bold()).foregroundStyle(.orange)
+                    Text(latest.error ?? "Processing stopped. Your completed subtitles are still available.")
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("Open Dub and Retry") { state.selectDub(latest) }
+                            .buttonStyle(.borderedProminent)
+                        if hasSubtitles { Button("View Available Subtitles") { state.selection = .subtitles } }
+                    }
+                } else if let latest, latest.status == "completed",
+                          let path = latest.artifacts["dubbed_video"], FileManager.default.fileExists(atPath: path) {
+                    Label("Your dub is ready", systemImage: "checkmark.circle.fill")
+                        .font(.title2.bold()).foregroundStyle(.green)
+                    Text("Watch \(latest.title), then export the video or subtitles from its result screen.")
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Watch and Export Result") { state.selectDub(latest) }
+                            .buttonStyle(.borderedProminent)
+                        Button("View Subtitles") { state.selection = .subtitles }
+                    }
+                } else if project.status == "failed" || project.status == "paused" {
+                    Label("Source analysis needs attention", systemImage: "exclamationmark.triangle.fill")
+                        .font(.title2.bold()).foregroundStyle(.orange)
+                    Text(project.lastError ?? "Processing stopped. You can retry without losing completed work.")
+                    Button("Retry Source Analysis") { state.startJob(analysis: true) }
+                        .buttonStyle(.borderedProminent).disabled(!state.canStartJob)
+                    if hasSubtitles { Button("View Available Subtitles") { state.selection = .subtitles } }
+                } else if hasSubtitles {
+                    Label("Subtitles are ready", systemImage: "captions.bubble.fill")
+                        .font(.title2.bold())
+                    Text("You can save the subtitles now or make a dub from this project.")
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("View and Export Subtitles") { state.selection = .subtitles }
+                            .buttonStyle(.borderedProminent)
+                        Button("Create a Dub") { state.outputMode = .dub; state.selection = .newDub }
+                    }
+                } else {
+                    Label("Ready to begin", systemImage: "play.circle.fill")
+                        .font(.title2.bold())
+                    Text("Create a dub to detect the source language, make subtitles, and render a video. You can also make subtitles on their own.")
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Create First Dub") { state.outputMode = .dub; state.selection = .newDub }
+                            .buttonStyle(.borderedProminent)
+                        Button("Subtitles Only") { state.selection = .newSubtitles }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
         }
     }
 

@@ -736,6 +736,24 @@ class ApplicationService:
             raise ValueError("Stop the active project job before deleting a dub")
         return store.delete_dub(dub_id)
 
+    def delete_project(self, output_dir: str, project_id: str) -> dict:
+        if not str(output_dir or "").strip() or not project_id or Path(project_id).name != project_id:
+            raise ValueError("A valid output_dir and project_id are required")
+        store = ProjectStore(Path(output_dir), "placeholder")
+        store.project_id = project_id
+        store.manifest_path = store.root / "projects" / f"{project_id}.json"
+        store.log_path = store.root / "logs" / f"{project_id}.log"
+        with self._lock:
+            if any(s.output_dir == store.output_dir and s.project_id == project_id
+                   and self._jobs[j].status in {"queued", "running"}
+                   for j, s in self._project_stores.items()):
+                raise ValueError("Pause or stop the active job before deleting this project")
+            project = store.load()
+            if project.get("status") == "running":
+                self._check_external_job(project)
+                raise ValueError("Pause or stop the active job before deleting this project")
+            return store.delete_project()
+
     def get_project(self, output_dir: str, project_id: str) -> dict:
         if not str(output_dir or "").strip():
             raise ValueError("output_dir is required")

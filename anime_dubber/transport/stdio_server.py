@@ -109,6 +109,10 @@ def serve() -> int:
                     str(params.get("output_dir") or ""), str(params.get("project_id") or ""),
                     str(params.get("dub_id") or ""),
                 )
+            elif method == "delete_project":
+                result = service.delete_project(
+                    str(params.get("output_dir") or ""), str(params.get("project_id") or ""),
+                )
             elif method == "get_project":
                 result = service.get_project(
                     str(params.get("output_dir") or ""),

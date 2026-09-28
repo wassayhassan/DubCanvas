@@ -12,6 +12,79 @@ from anime_dubber.core import source_key
 
 
 class ProjectStoreTests(unittest.TestCase):
+    def test_delete_project_removes_only_its_generated_data(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); output = root / "output"; output.mkdir()
+            source = root / "episode.mp4"; source.write_bytes(b"original")
+            other_source = root / "other.mp4"; other_source.write_bytes(b"other original")
+            service = ApplicationService()
+            first = ProjectStore(output, str(source)); first.create(source=str(source), name="First")
+            other = ProjectStore(output, str(other_source)); other.create(source=str(other_source), name="Other")
+            shared = output / f"{first.project_id}_en.srt"; shared.write_text("first subtitle")
+            second_file = output / f"{other.project_id}_en.srt"; second_file.write_text("other subtitle")
+            first.publish_artifact("source_srt", str(shared), language="en")
+            other.publish_artifact("source_srt", str(second_file), language="en")
+            version = output / "versions" / "dub_first"; version.mkdir(parents=True)
+            (version / "result.mp4").write_bytes(b"dub")
+            cache = output / ".anime_dubber_work" / first.project_id; cache.mkdir(parents=True)
+            (cache / "cached.wav").write_bytes(b"cache")
+            first.begin(job_id="job_first", kind="run", config={"source": str(source)}, dub_id="dub_first")
+            first.finish(status="completed", dub_id="dub_first")
+            first.append_log("finished")
+            result = service.delete_project(str(output), first.project_id)
+            self.assertTrue(result["deleted"])
+            self.assertFalse(first.manifest_path.exists())
+            self.assertFalse(first.log_path.exists())
+            self.assertFalse(shared.exists())
+            self.assertFalse(version.exists())
+            self.assertFalse(cache.exists())
+            self.assertTrue(source.exists())
+            self.assertTrue(other.manifest_path.exists())
+            self.assertTrue(second_file.exists())
+
+    def test_delete_project_rejects_active_job_and_source_inside_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); service = ApplicationService()
+            store = ProjectStore(root, "https://youtu.be/episode")
+            store.create(source="https://youtu.be/episode", name="Episode")
+            store.begin(job_id="job_running", kind="run", config={"source": "https://youtu.be/episode"})
+            with self.assertRaisesRegex(ValueError, "active"):
+                service.delete_project(str(root), store.project_id)
+            store.finish(status="paused")
+            cache = root / ".anime_dubber_work" / store.project_id
+            cache.mkdir(parents=True)
+            source = cache / "my_original.mp4"; source.write_bytes(b"source")
+            data = store.load(); data["source"] = str(source)
+            store.manifest_path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "original video"):
+                service.delete_project(str(root), store.project_id)
+            self.assertTrue(source.exists())
+            self.assertTrue(store.manifest_path.exists())
+
+    def test_legacy_project_can_be_deleted_without_removing_local_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); source = root / "source.mp4"; source.write_bytes(b"original")
+            (root / "legacy123_run.json").write_text(json.dumps({"source": str(source)}))
+            video = root / "legacy123_EN_DUB.mp4"; video.write_bytes(b"dub")
+            result = ApplicationService().delete_project(str(root), "legacy123")
+            self.assertTrue(result["deleted"])
+            self.assertEqual(list_projects(root), [])
+            self.assertTrue(source.exists())
+            self.assertFalse(video.exists())
+
+    def test_delete_project_refuses_symlinked_cache_outside_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); output = root / "output"; outside = root / "outside"; outside.mkdir()
+            store = ProjectStore(output, "https://youtu.be/episode")
+            store.create(source="https://youtu.be/episode", name="Episode")
+            cache_parent = output / ".anime_dubber_work"; cache_parent.mkdir()
+            (cache_parent / store.project_id).symlink_to(outside, target_is_directory=True)
+            protected = outside / "keep.txt"; protected.write_text("keep")
+            with self.assertRaisesRegex(ValueError, "outside"):
+                ApplicationService().delete_project(str(output), store.project_id)
+            self.assertTrue(protected.exists())
+            self.assertTrue(store.manifest_path.exists())
+
     def test_project_names_are_required_unique_and_can_be_renamed(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
