@@ -368,7 +368,18 @@ final class AppState: ObservableObject {
     }
 
     private func sourceIsInspected(for action: PendingSourceAction) -> Bool {
-        if sourceInspection?.source == source.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
+        if let inspection = sourceInspection,
+           inspection.source == source.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if inspection.kind != "file" { return true }
+            let path = (inspection.source as NSString).expandingTildeInPath
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+               let size = attributes[.size] as? NSNumber,
+               let modified = attributes[.modificationDate] as? Date,
+               size.int64Value == inspection.sizeBytes,
+               let checkedAt = inspection.modifiedAt,
+               abs(modified.timeIntervalSince1970 - checkedAt) < 0.001 { return true }
+            sourceInspection = nil
+        }
         pendingSourceAction = action
         inspectSource()
         return false

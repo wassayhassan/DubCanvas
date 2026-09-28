@@ -29,6 +29,7 @@ class ApplicationServiceTests(unittest.TestCase):
             self.assertEqual(info["title"], "episode.mp4")
             self.assertGreater(info["duration"], 0.9)
             self.assertGreater(info["size_bytes"], 0)
+            self.assertAlmostEqual(info["modified_at"], video.stat().st_mtime, places=3)
             video.unlink()
             with self.assertRaisesRegex(ValueError, "missing"):
                 ApplicationService().inspect_source(str(video))

@@ -790,8 +790,9 @@ class ApplicationService:
             raise ValueError("The video file cannot be read. Check its permissions or choose another file.") from exc
         except (PipelineError, ValueError) as exc:
             raise ValueError(f"The selected file is not a usable video with audio: {exc}") from exc
+        stat = path.stat()
         return {"source": value, "kind": "file", "title": path.name,
-                "duration": duration, "size_bytes": path.stat().st_size}
+                "duration": duration, "size_bytes": stat.st_size, "modified_at": stat.st_mtime}
 
     def update_project(self, output_dir: str, project_id: str, name: str, series_id: str) -> dict:
         project = self.get_project(output_dir, project_id)

@@ -233,6 +233,7 @@ struct SourceInspection {
     let title: String
     let duration: Double
     let sizeBytes: Int64?
+    let modifiedAt: Double?
     let thumbnailURL: String?
 
     init?(dictionary: [String: Any]) {
@@ -242,6 +243,7 @@ struct SourceInspection {
         title = dictionary["title"] as? String ?? "Video"
         duration = (dictionary["duration"] as? NSNumber)?.doubleValue ?? 0
         sizeBytes = (dictionary["size_bytes"] as? NSNumber)?.int64Value
+        modifiedAt = (dictionary["modified_at"] as? NSNumber)?.doubleValue
         thumbnailURL = dictionary["thumbnail_url"] as? String
     }
 }
