@@ -5,7 +5,8 @@ import tempfile
 import unittest
 import wave
 import json
-import numpy as np
+from array import array
+from math import sqrt
 from unittest.mock import patch
 from pathlib import Path
 
@@ -68,8 +69,9 @@ class FfmpegPipelineTests(unittest.TestCase):
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i",
                             str(result["dubbed_video"]), "-vn", "-c:a", "pcm_s16le", str(output_wav)], check=True)
             with wave.open(str(output_wav), "rb") as handle:
-                samples = np.frombuffer(handle.readframes(handle.getnframes()), dtype="<i2")
-            self.assertGreater(float(np.sqrt(np.mean(samples.astype(np.float64) ** 2))), 100.0)
+                samples = array("h")
+                samples.frombytes(handle.readframes(handle.getnframes()))
+            self.assertGreater(sqrt(sum(value * value for value in samples) / len(samples)), 100.0)
 
     def test_replaced_source_invalidates_extracted_audio(self):
         with tempfile.TemporaryDirectory() as td:
