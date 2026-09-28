@@ -25,7 +25,7 @@ class ProjectVersionsTests(unittest.TestCase):
                 "glossary": cfg.glossary, "source_text": ["天下武林,门派如林"],
             }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
             cache = Path(temp) / f"translations_llm_{signature}.json"
-            cache.write_text(json.dumps({"0": "天下武林,门派如林"}, ensure_ascii=False))
+            cache.write_text(json.dumps({"0": "天下武林,门派如林"}, ensure_ascii=False), encoding="utf-8")
             responses = iter(['[{"id": 0, "text": "The martial world has countless sects."}]'])
             fake = types.SimpleNamespace(
                 load=lambda _: (object(), types.SimpleNamespace(chat_template=None)),
@@ -34,7 +34,7 @@ class ProjectVersionsTests(unittest.TestCase):
                 result = translate_with_llm([Segment(0, 2, "天下武林,门派如林")], cfg,
                                             Path(temp), CommandRunner(), lambda _: None)
             self.assertEqual(result[0].translated, "The martial world has countless sects.")
-            self.assertEqual(json.loads(cache.read_text())["0"], result[0].translated)
+            self.assertEqual(json.loads(cache.read_text(encoding="utf-8"))["0"], result[0].translated)
 
     def test_ollama_never_caches_untranslated_fallback(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -46,7 +46,7 @@ class ProjectVersionsTests(unittest.TestCase):
                 result = translate_with_ollama_provider([Segment(0, 2, "天下武林,门派如林")],
                                                         cfg, Path(temp), CommandRunner(), lambda _: None)
             self.assertEqual(result[0].translated, "The martial world has countless sects.")
-            self.assertNotIn("天下武林", next(Path(temp).glob("translations_ollama_*.json")).read_text())
+            self.assertNotIn("天下武林", next(Path(temp).glob("translations_ollama_*.json")).read_text(encoding="utf-8"))
 
     def test_translation_failure_stops_before_dub(self):
         with tempfile.TemporaryDirectory() as temp:
