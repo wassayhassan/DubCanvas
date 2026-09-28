@@ -117,7 +117,7 @@ class ProjectStore:
         except ValueError:
             return self._validated_name(f"{title} ({self.project_id[-8:]})")
 
-    def create(self, *, source: str, name: str = "", series_id: str = "") -> dict:
+    def create(self, *, source: str, name: str = "", series_id: str = "", source_title: str = "") -> dict:
         if not source.strip():
             raise ValueError("source is required")
         name = self._validated_name(name)
@@ -131,7 +131,7 @@ class ProjectStore:
         now = _now()
         data = {
             "schema_version": 2, "project_id": self.project_id,
-            "source": source, "name": name, "series_id": series_id,
+            "source": source, "source_title": source_title.strip(), "name": name, "series_id": series_id,
             "output_dir": str(self.output_dir), "status": "ready", "stage": "ready",
             "stage_title": "Ready", "progress": None, "active_job_id": None,
             "created_at": now, "updated_at": now, "config": {},
@@ -171,6 +171,7 @@ class ProjectStore:
             "schema_version": 2,
             "project_id": self.project_id,
             "source": str(config.get("source") or ""),
+            "source_title": str(old.get("source_title") or ""),
             "series_id": str(config.get("series_id") or old.get("series_id") or ""),
             "name": old.get("name") or self._default_name(str(config.get("source") or "")),
             "output_dir": str(self.output_dir),
@@ -504,6 +505,7 @@ def list_projects(output_dir: Path) -> list[dict]:
         rows.append({
             "project_id": str(data.get("project_id") or path.stem),
             "source": str(data.get("source") or ""),
+            "source_title": str(data.get("source_title") or ""),
             "source_language": data.get("source_language"),
             "series_id": str(data.get("series_id") or ""),
             "output_dir": str(data.get("output_dir") or Path(output_dir).expanduser()),
@@ -515,6 +517,8 @@ def list_projects(output_dir: Path) -> list[dict]:
             "active_pid": data.get("active_pid"),
             "updated_at": str(data.get("updated_at") or ""),
             "created_at": str(data.get("created_at") or ""),
+            "started_at": str((data.get("runs") or [{}])[-1].get("started_at") or ""),
+            "last_run_mode": str((data.get("config") or {}).get("mode") or ""),
             "artifacts": dict(data.get("artifacts") or {}),
             "name": str(data.get("name") or ""),
             "subtitles": dict(data.get("subtitles") or {}),

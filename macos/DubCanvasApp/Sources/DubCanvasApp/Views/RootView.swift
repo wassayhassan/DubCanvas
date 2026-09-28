@@ -3,23 +3,12 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.openWindow) private var openWindow
+    @SceneStorage("workspaceProjectID") private var savedProjectID = ""
+    @SceneStorage("workspaceDestination") private var savedDestination = "overview"
 
     var body: some View {
         NavigationSplitView {
             List(selection: $state.selection) {
-                Section("Library") {
-                    Button { openWindow(id: "welcome") } label: {
-                        Label("All Projects", systemImage: "square.stack.3d.up")
-                    }
-                    .buttonStyle(.plain)
-                    Button {
-                        openWindow(id: "workspace", value: WorkspaceRequest.newProject(in: state.outputFolder))
-                    } label: {
-                        Label("New Project", systemImage: "folder.badge.plus")
-                    }
-                    .buttonStyle(.plain)
-                }
-
                 if let project = state.currentProject {
                     Section(project.displayName) {
                         sidebarRow(.overview)
@@ -27,29 +16,56 @@ struct RootView: View {
                         sidebarRow(.subtitles)
                         sidebarRow(.characters)
                         sidebarRow(.dubs)
-                        sidebarRow(.newDub)
                         ForEach(project.dubs) { dub in
-                            Button { state.selectDub(dub) } label: {
-                                Label(dub.title, systemImage: dub.status == "completed" ? "checkmark.circle" : "waveform.circle")
-                                    .lineLimit(1)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                                    .padding(.leading, 12)
+                            NavigationLink(value: SidebarDestination.dub(dub.id)) {
+                                HStack(spacing: 8) {
+                                    if dub.status == "running" {
+                                        ProgressView().controlSize(.mini)
+                                    } else {
+                                        Image(systemName: dub.status == "completed" ?
+                                              (dub.warnings.isEmpty ? "checkmark.circle.fill" : "exclamationmark.circle.fill") :
+                                              dub.status == "failed" ? "xmark.octagon.fill" : "pause.circle")
+                                            .foregroundStyle(dub.status == "completed" ?
+                                                (dub.warnings.isEmpty ? Color.green : Color.orange) :
+                                                dub.status == "failed" ? Color.red : Color.secondary)
+                                    }
+                                    Text(dub.title).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.leading, 14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
-                            .tag(SidebarDestination.dub(dub.id))
+                            .help("\(dub.title) · \(dub.status.capitalized) · \(dub.language.uppercased())")
                         }
+                        Button {
+                            state.outputMode = .dub
+                            state.dubName = ""
+                            state.selection = .newDub
+                        } label: {
+                            Label("New Dub", systemImage: "plus.circle.fill")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(project.status == "running" || state.activeJobID != nil)
                     }
                 }
-
-                Section("Support") {
+                Section("App") {
+                    Button { openWindow(id: "welcome") } label: {
+                        Label("All Projects", systemImage: "square.stack.3d.up")
+                    }.buttonStyle(.plain)
+                    Button {
+                        openWindow(id: "workspace", value: WorkspaceRequest.newProject(in: state.outputFolder))
+                    } label: {
+                        Label("New Project", systemImage: "folder.badge.plus")
+                    }.buttonStyle(.plain)
                     sidebarRow(.activity)
                     sidebarRow(.settings)
                 }
             }
             .listStyle(.sidebar)
-            .navigationTitle("DubCanvas")
-            .navigationSplitViewColumnWidth(min: 205, ideal: 235, max: 290)
+            .navigationTitle(state.currentProject?.displayName ?? "DubCanvas")
+            .navigationSplitViewColumnWidth(min: 230, ideal: 255, max: 320)
         } detail: {
             detail
                 .toolbar {
@@ -74,17 +90,35 @@ struct RootView: View {
         .onChange(of: state.selection) { _, destination in
             if destination == .newDub { state.outputMode = .dub }
             if destination == .newSubtitles { state.outputMode = .subtitles }
+            if state.currentProject != nil, let destination {
+                savedDestination = destination.storageKey
+            }
+        }
+        .onChange(of: state.currentProject?.id) { _, projectID in
+            guard let projectID else { return }
+            if savedProjectID == projectID {
+                if let destination = SidebarDestination(storageKey: savedDestination) {
+                    switch destination {
+                    case .dub(let id), .review(let id):
+                        state.selection = state.currentProject?.dubs.contains(where: { $0.id == id }) == true
+                            ? destination : .overview
+                    default:
+                        state.selection = destination
+                    }
+                }
+            } else {
+                savedProjectID = projectID
+                savedDestination = "overview"
+            }
         }
     }
 
     private func sidebarRow(_ destination: SidebarDestination) -> some View {
-        Button { state.selection = destination } label: {
+        NavigationLink(value: destination) {
             Label(destination.title, systemImage: destination.symbol)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .tag(destination)
     }
 
     @ViewBuilder private var detail: some View {

@@ -102,6 +102,16 @@ class ProjectStoreTests(unittest.TestCase):
                 first.rename("", "")
             self.assertEqual(first.rename("Episode 1", "")["name"], "Episode 1")
 
+    def test_inspected_video_title_survives_processing_and_project_listing(self):
+        with tempfile.TemporaryDirectory() as td:
+            service = ApplicationService()
+            store = ProjectStore(Path(td), "https://youtu.be/episode")
+            service.create_project(td, "https://youtu.be/episode", "Episode", source_title="Original Episode")
+            self.assertEqual(service.list_projects(td)[0]["source_title"], "Original Episode")
+            store.begin(job_id="job1", kind="run", config={"source": "https://youtu.be/episode"})
+            store.finish(status="completed")
+            self.assertEqual(service.list_projects(td)[0]["source_title"], "Original Episode")
+
     def test_local_files_with_same_name_get_separate_projects_and_work_keys(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

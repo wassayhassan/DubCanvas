@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 import json
 import tempfile
+import shutil
+import subprocess
 from unittest.mock import patch
 
 from anime_dubber.application.events import progress_to_event
@@ -14,6 +16,43 @@ from anime_dubber.core import Config, ReviewRequired, resolve_translation_mode
 
 
 class ApplicationServiceTests(unittest.TestCase):
+    def test_source_inspection_checks_real_local_audio_and_video(self):
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            self.skipTest("ffmpeg tools unavailable")
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "episode.mp4"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "color=c=black:s=160x120:d=1", "-f", "lavfi", "-i",
+                            "sine=frequency=440:duration=1", "-shortest", "-c:v", "mpeg4",
+                            "-c:a", "aac", str(video)], check=True)
+            info = ApplicationService().inspect_source(str(video))
+            self.assertEqual(info["title"], "episode.mp4")
+            self.assertGreater(info["duration"], 0.9)
+            self.assertGreater(info["size_bytes"], 0)
+            video.unlink()
+            with self.assertRaisesRegex(ValueError, "missing"):
+                ApplicationService().inspect_source(str(video))
+
+    def test_source_inspection_rejects_unsupported_and_transient_links(self):
+        service = ApplicationService()
+        with self.assertRaisesRegex(ValueError, "http or https"):
+            service.inspect_source("ftp://example.com/movie")
+        with self.assertRaisesRegex(ValueError, "Temporary playback"):
+            service.inspect_source("https://r1---sn.googlevideo.com/videoplayback?id=abc")
+        with patch("anime_dubber.application.service._module_available", return_value=True), \
+             patch("anime_dubber.application.service.subprocess.run", return_value=subprocess.CompletedProcess(
+                 [], 0, json.dumps({"title": "Episode", "duration": 72,
+                                    "formats": [{"url": "https://example.com/video.mp4", "vcodec": "h264", "acodec": "aac"}]}), "")):
+            info = service.inspect_source("https://example.com/watch?v=1")
+        self.assertEqual(info["duration"], 72)
+        self.assertEqual(info["kind"], "url")
+        with patch("anime_dubber.application.service._module_available", return_value=True), \
+             patch("anime_dubber.application.service.subprocess.run", return_value=subprocess.CompletedProcess(
+                 [], 0, json.dumps({"title": "Silent episode", "formats": [
+                     {"vcodec": "h264", "acodec": "none"}]}), "")):
+            with self.assertRaisesRegex(ValueError, "No audio track"):
+                service.inspect_source("https://example.com/watch?v=2")
+
     def test_auto_translation_uses_available_ollama_for_english(self):
         cfg = Config(source="video.mp4", output_dir=Path("/tmp"), source_language="es",
                      target_language="en", translation="auto")

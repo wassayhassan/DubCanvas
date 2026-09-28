@@ -1,8 +1,15 @@
+import AppKit
+import AVFoundation
 import SwiftUI
 
 struct NewProjectView: View {
     @EnvironmentObject private var state: AppState
     @State private var detailsExpanded = false
+    @State private var showingLinkField = false
+    @State private var thumbnail: NSImage?
+    @State private var dropTargeted = false
+    @State private var proposedNameFromSource = ""
+    @FocusState private var linkFocused: Bool
 
     private var hasLocalFile: Bool {
         state.source.hasPrefix("/")
@@ -26,6 +33,7 @@ struct NewProjectView: View {
 
                 sourceSection
                 identitySection
+                expectations
                 detailsSection
 
                 if !state.jobIssue.isEmpty {
@@ -46,20 +54,18 @@ struct NewProjectView: View {
                 }
 
                 HStack(alignment: .center, spacing: 16) {
-                    Button("Create Project Only") { state.createProject() }
-                        .disabled(!hasSource || state.projectNameProblem() != nil)
-                        .help("Save the source without starting analysis or dubbing")
-                    Spacer()
-                    Button("Create Project & Dub") { state.quickStart() }
+                    Button("Create Project and Start \(languageName) Dub") { state.quickStart() }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
-                        .disabled(!state.canQuickStart || state.quickStartProblem != nil)
+                        .disabled(!state.canQuickStart || state.quickStartProblem != nil || state.sourceValidationPending)
+                    if state.sourceValidationPending { ProgressView().controlSize(.small) }
                 }
                 .padding(.top, 6)
-
-                Text("The first dub runs automatically. You can add more languages and voice versions from the project later.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Button("Create Without Dub") { state.createProject() }
+                    .buttonStyle(.link)
+                    .disabled(!hasSource || state.projectNameProblem() != nil || state.sourceValidationPending)
+                Text("Saves the project now. You can generate subtitles or create a dub later.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: 720, alignment: .leading)
             .padding(28)
@@ -67,61 +73,98 @@ struct NewProjectView: View {
         }
         .navigationTitle("New Project")
         .onChange(of: state.source) { _, source in
+            state.resetSourceInspection()
+            thumbnail = nil
+            if !proposedNameFromSource.isEmpty && state.projectName == proposedNameFromSource {
+                state.projectName = ""
+            }
             guard state.projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  source.hasPrefix("/") else { return }
-            state.projectName = URL(fileURLWithPath: source).deletingPathExtension().lastPathComponent
-                .replacingOccurrences(of: "_", with: " ")
+                  !source.isEmpty else {
+                if source.hasPrefix("/") { state.inspectSource() }
+                return
+            }
+            if source.hasPrefix("/") {
+                state.projectName = URL(fileURLWithPath: source).deletingPathExtension().lastPathComponent
+                    .replacingOccurrences(of: "_", with: " ")
+                proposedNameFromSource = state.projectName
+                state.inspectSource()
+            }
         }
+        .onChange(of: state.sourceInspection?.source) { _, _ in
+            if let inspection = state.sourceInspection, inspection.kind == "url",
+               state.projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                state.projectName = inspection.title
+                proposedNameFromSource = inspection.title
+            }
+            loadThumbnail()
+        }
+    }
+
+    private var languageName: String {
+        ["en": "English", "es": "Spanish", "fr": "French", "de": "German", "ja": "Japanese",
+         "ko": "Korean", "zh": "Chinese", "pt": "Portuguese", "it": "Italian", "hi": "Hindi",
+         "ar": "Arabic"][state.targetLanguage] ?? state.targetLanguage.uppercased()
+    }
+
+    private var durationLabel: String {
+        guard let duration = state.sourceInspection?.duration, duration > 0 else { return "Duration unavailable" }
+        let seconds = Int(duration)
+        return seconds >= 3600 ? String(format: "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+            : String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     private var sourceSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("1", "Source video")
-            GroupBox {
-                VStack(alignment: .leading, spacing: 14) {
-                    if hasLocalFile {
-                        HStack(spacing: 12) {
-                            Image(systemName: "film")
-                                .font(.title2)
-                                .foregroundStyle(.tint)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(URL(fileURLWithPath: state.source).lastPathComponent)
-                                    .fontWeight(.medium)
-                                    .lineLimit(1)
-                                Text(state.source)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .textSelection(.enabled)
-                            }
-                            Spacer(minLength: 8)
-                            Button("Use Link Instead") { state.source = "" }
-                            Button("Change File…") { state.chooseSourceFile() }
-                        }
-                    } else {
-                        HStack(spacing: 12) {
-                            Button { state.chooseSourceFile() } label: {
-                                Label("Choose Video File", systemImage: "plus")
-                            }
-                            Text("or drop a video here")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
-                        HStack(spacing: 10) {
-                            Image(systemName: "link")
-                                .foregroundStyle(.secondary)
-                            TextField("Or paste a video page URL", text: $state.source)
-                                .textFieldStyle(.roundedBorder)
-                        }
+            HStack(spacing: 18) {
+                if let thumbnail {
+                    Image(nsImage: thumbnail).resizable().scaledToFill()
+                        .frame(width: 190, height: 112).clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .accessibilityLabel("Selected video thumbnail")
+                } else if let address = state.sourceInspection?.thumbnailURL,
+                          let url = URL(string: address), url.scheme == "https" {
+                    AsyncImage(url: url) { image in
+                        image.resizable().scaledToFill()
+                    } placeholder: {
+                        Image(systemName: "film.fill").font(.largeTitle).foregroundStyle(.tint)
                     }
-                    Text("Use the video's page link rather than a temporary playback URL.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .frame(width: 190, height: 112).clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                } else {
+                    Image(systemName: hasSource ? "film.fill" : "plus.viewfinder")
+                        .font(.system(size: 42))
+                        .foregroundStyle(.tint)
+                        .frame(width: 112, height: 112)
                 }
-                .padding(8)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(state.sourceInspection?.title ?? (hasSource ? (hasLocalFile ? URL(fileURLWithPath: state.source).lastPathComponent : "Video link") : "Choose a video"))
+                        .font(.headline).lineLimit(2)
+                    Text(hasSource ? durationLabel : "Drop a video here or choose a file from your Mac.")
+                        .foregroundStyle(.secondary)
+                    if let size = state.sourceInspection?.sizeBytes {
+                        Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if state.sourceValidationPending {
+                        Label("Checking video and audio…", systemImage: "hourglass")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if state.sourceInspection != nil {
+                        Label("Video and audio available", systemImage: "checkmark.circle.fill")
+                            .font(.caption).foregroundStyle(.green)
+                    }
+                    Button(hasLocalFile ? "Change Video…" : "Choose Video…") { state.chooseSourceFile() }
+                        .buttonStyle(.borderedProminent)
+                }
+                Spacer(minLength: 0)
             }
-            .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
+            .frame(maxWidth: .infinity, minHeight: 165, alignment: .leading)
+            .padding(18)
+            .background(dropTargeted ? Color.accentColor.opacity(0.13) : Color.accentColor.opacity(0.045),
+                        in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Color.accentColor.opacity(dropTargeted ? 0.7 : 0.3), style: StrokeStyle(lineWidth: 1.5, dash: [7])))
+            .onDrop(of: ["public.file-url"], isTargeted: $dropTargeted) { providers in
                 guard let provider = providers.first else { return false }
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
                     if let url, url.isFileURL {
@@ -129,6 +172,38 @@ struct NewProjectView: View {
                     }
                 }
                 return true
+            }
+            HStack(spacing: 10) {
+                Button("Paste Link", systemImage: "link") {
+                    showingLinkField = true
+                    if hasLocalFile { state.source = "" }
+                    if let copied = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       copied.hasPrefix("https://") || copied.hasPrefix("http://") {
+                        state.source = copied
+                    }
+                    linkFocused = true
+                }
+                    .buttonStyle(.link)
+                if hasLocalFile { Text("or use a video page link").font(.caption).foregroundStyle(.secondary) }
+            }
+            if showingLinkField || (hasSource && !hasLocalFile) {
+                HStack {
+                    TextField("Paste video page URL", text: $state.source)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($linkFocused)
+                    Button("Check Link") { state.inspectSource() }
+                        .disabled(!hasSource || state.sourceValidationPending || hasLocalFile)
+                }
+                Text("Use a video page URL, not a temporary playback link.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let issue = state.sourceValidationIssue {
+                issueRow(issue, symbol: "exclamationmark.triangle", color: .orange)
+                HStack {
+                    Button("Choose Another Video…") { state.chooseSourceFile() }
+                    Button("Check Again") { state.inspectSource() }
+                    Button("System Check") { state.runSystemCheck() }
+                }
             }
         }
     }
@@ -144,6 +219,10 @@ struct NewProjectView: View {
                     if let issue = state.projectNameProblem() {
                         Label(issue, systemImage: "exclamationmark.circle")
                             .font(.caption).foregroundStyle(.orange)
+                        if let suggested = state.suggestedProjectName {
+                            Button("Use \(suggested)") { state.projectName = suggested }
+                                .buttonStyle(.link)
+                        }
                     }
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
@@ -168,13 +247,50 @@ struct NewProjectView: View {
                         .labelsHidden().frame(width: 165)
                     }
                     if !state.outputFolder.isEmpty {
-                        Label("Stored in: \(state.outputFolder)", systemImage: "folder")
+                        HStack {
+                            Label("Saved in \((state.outputFolder as NSString).expandingTildeInPath)", systemImage: "folder")
+                            Button("Change…") { state.chooseOutputFolder() }
+                                .buttonStyle(.link)
+                        }
                             .font(.caption).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
+            }
+        }
+    }
+
+    private var expectations: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("When you start the first dub").font(.headline)
+            Label("Source language and speakers detected automatically", systemImage: "waveform.badge.magnifyingglass")
+            Label("Source and translated subtitles saved before voice generation", systemImage: "captions.bubble")
+            Label("Final output: dubbed video and subtitle files", systemImage: "film.stack")
+            if let seconds = state.sourceInspection?.duration, seconds > 0 {
+                let audioBytes = Int64(seconds * 44100 * 4 * 3)
+                Text("Temporary audio for this video needs at least \(ByteCountFormatter.string(fromByteCount: audioBytes, countStyle: .file)). Video output and models need more space.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("The first run may download several GB of speech, translation, and voice models. Exact download size depends on the installed models.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func loadThumbnail() {
+        thumbnail = nil
+        guard state.sourceInspection?.kind == "file", let path = state.sourceInspection?.source else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: URL(fileURLWithPath: path)))
+            generator.appliesPreferredTrackTransform = true
+            let image = try? generator.copyCGImage(at: CMTime(seconds: 0.5, preferredTimescale: 600), actualTime: nil)
+            DispatchQueue.main.async {
+                guard state.source == path, let image else { return }
+                thumbnail = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
             }
         }
     }

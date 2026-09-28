@@ -98,7 +98,10 @@ def serve() -> int:
                 result = service.create_project(
                     str(params.get("output_dir") or ""), str(params.get("source") or ""),
                     str(params.get("name") or ""), str(params.get("series_id") or ""),
+                    str(params.get("source_title") or ""),
                 )
+            elif method == "inspect_source":
+                result = service.inspect_source(str(params.get("source") or ""))
             elif method == "update_project":
                 result = service.update_project(
                     str(params.get("output_dir") or ""), str(params.get("project_id") or ""),

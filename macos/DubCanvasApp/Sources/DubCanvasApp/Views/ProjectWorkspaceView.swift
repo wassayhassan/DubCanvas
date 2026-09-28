@@ -6,19 +6,24 @@ struct ProjectWorkspaceView: View {
     @EnvironmentObject private var state: AppState
     @State private var showingComparison = false
     @State private var showingDeleteConfirmation = false
+    @State private var showingResultExport = false
     @State private var sourcePlayer: AVPlayer?
+    @State private var resultPlayer: AVPlayer?
+    @SceneStorage("overviewScrollTarget") private var overviewScrollTarget: String?
+    @SceneStorage("overviewScrollProjectID") private var overviewScrollProjectID = ""
 
     var body: some View {
         ScrollView {
             if let project = state.currentProject {
                 VStack(alignment: .leading, spacing: 20) {
-                    header(project)
+                    header(project).id("projectHeader")
                     switch state.selection ?? .overview {
                     case .media: media(project)
                     case .dubs: dubs(project)
                     default: overview(project)
                     }
                 }
+                .scrollTargetLayout()
                 .frame(maxWidth: 900, alignment: .leading)
                 .padding(28)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -26,10 +31,17 @@ struct ProjectWorkspaceView: View {
                 ContentUnavailableView("Open a Project", systemImage: "folder", description: Text("Choose a project in the library."))
             }
         }
+        .scrollPosition(id: $overviewScrollTarget)
         .navigationTitle(state.currentProject?.displayName ?? "Project")
         .sheet(isPresented: $showingComparison) {
             if let project = state.currentProject {
                 DubComparisonView(project: project).frame(minWidth: 880, minHeight: 640)
+            }
+        }
+        .sheet(isPresented: $showingResultExport) {
+            if let project = state.currentProject,
+               let dub = project.dubs.first(where: { $0.status == "completed" && $0.artifacts["dubbed_video"] != nil }) {
+                DubExportView(projectName: project.displayName, dub: dub).frame(minWidth: 520)
             }
         }
         .confirmationDialog("Delete \(state.currentProject?.displayName ?? "project")?", isPresented: $showingDeleteConfirmation) {
@@ -41,10 +53,24 @@ struct ProjectWorkspaceView: View {
         } message: {
             Text("Subtitles, dubs, cached media, and processing history will be removed. Your original video file stays on your Mac. This cannot be undone.")
         }
-        .onAppear { if let project = state.currentProject { loadSource(project) } }
+        .onAppear {
+            if let project = state.currentProject {
+                if overviewScrollProjectID != project.id {
+                    overviewScrollProjectID = project.id
+                    overviewScrollTarget = "projectHeader"
+                }
+                loadSource(project)
+                loadResult(project)
+            }
+        }
         .onChange(of: state.selectedProjectID) { _, _ in
             sourcePlayer?.pause()
-            if let project = state.currentProject { loadSource(project) }
+            resultPlayer?.pause()
+            if let projectID = state.selectedProjectID, projectID != overviewScrollProjectID {
+                overviewScrollProjectID = projectID
+                overviewScrollTarget = "projectHeader"
+            }
+            if let project = state.currentProject { loadSource(project); loadResult(project) }
         }
         .onChange(of: state.currentProject?.source) { _, _ in
             if let project = state.currentProject { loadSource(project) }
@@ -52,27 +78,22 @@ struct ProjectWorkspaceView: View {
         .onChange(of: state.currentProject?.artifacts["source_video"]) { _, _ in
             if let project = state.currentProject { loadSource(project) }
         }
-        .onDisappear { sourcePlayer?.pause() }
+        .onChange(of: state.currentProject?.dubs.first(where: { $0.status == "completed" })?.artifacts["dubbed_video"]) { _, _ in
+            if let project = state.currentProject { loadResult(project) }
+        }
+        .onDisappear { sourcePlayer?.pause(); resultPlayer?.pause() }
     }
 
     private func header(_ project: ProjectSummary) -> some View {
         HStack(alignment: .top, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
             Text(project.displayName).font(.largeTitle.bold())
-            Text(project.source).font(.callout).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            Text(project.sourceTitle).font(.callout).foregroundStyle(.secondary).lineLimit(1)
             HStack {
-                Label("\(project.dubs.count) dubs", systemImage: "waveform")
-                Label("\(project.subtitles.count) subtitle sets", systemImage: "captions.bubble")
                 if let language = project.sourceLanguage {
-                    Label("Source: \(language.uppercased())", systemImage: "globe")
+                    Label("Source: \(Locale.current.localizedString(forLanguageCode: language) ?? language.uppercased())", systemImage: "globe")
                 }
-                if project.analysisRevision > 0 {
-                    Label("Analysis revision \(project.analysisRevision)", systemImage: "square.stack.3d.up")
-                }
-                if project.status == "running" {
-                    Label(project.stageTitle, systemImage: "hourglass")
-                }
+                Label("\(project.dubs.count) versions", systemImage: "waveform")
             }
             .font(.caption).foregroundStyle(.secondary)
             }
@@ -102,7 +123,7 @@ struct ProjectWorkspaceView: View {
 
     private func overview(_ project: ProjectSummary) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            nextStep(project)
+            nextStep(project).id("projectAction")
             if !state.jobIssue.isEmpty {
                 GroupBox("Needs attention") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -115,22 +136,123 @@ struct ProjectWorkspaceView: View {
             if let error = state.projectDeletionError {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
             }
+            if project.dubs.contains(where: { $0.status == "completed" && $0.artifacts["dubbed_video"] != nil }) {
+                latestResult(project).id("projectResult")
+            }
+            timeline(project).id("projectTimeline")
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 16) {
-                    sourcePreview.frame(minWidth: 280)
+                    if !project.dubs.isEmpty || !project.subtitles.isEmpty {
+                        sourcePreview.frame(minWidth: 280)
+                    }
                     sharedAnalysis(project).frame(minWidth: 340)
                 }
                 VStack(alignment: .leading, spacing: 16) {
-                    sourcePreview
+                    if !project.dubs.isEmpty || !project.subtitles.isEmpty { sourcePreview }
                     sharedAnalysis(project)
                 }
+            }.id("projectAnalysis")
+            overviewPreviews(project).id("projectVersions")
+        }
+        .scrollTargetLayout()
+    }
+
+    private func latestResult(_ project: ProjectSummary) -> some View {
+        let dub = project.dubs.first { $0.status == "completed" && $0.artifacts["dubbed_video"] != nil }
+        return GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                if let dub {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Latest finished result").font(.title2.bold())
+                            Text("\(dub.title) · \(dub.language.uppercased())")
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Export…", systemImage: "square.and.arrow.up") { showingResultExport = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    if let resultPlayer {
+                        NativeDubPlayer(player: resultPlayer)
+                            .frame(height: 330)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    } else {
+                        Label("The saved video is no longer available at its original location.", systemImage: "film")
+                            .foregroundStyle(.orange)
+                    }
+                    Button("Open Version Details") { state.selectDub(dub) }
+                }
             }
-            subtitles(project)
-            dubs(project)
-            DisclosureGroup("Project files and settings") {
-                media(project)
-                Button("Project Settings") { state.selection = .projectSettings }
-                Button("Speakers & Voices") { state.selection = .characters }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+        }
+    }
+
+    private func loadResult(_ project: ProjectSummary) {
+        guard let path = project.dubs.first(where: { $0.status == "completed" && $0.artifacts["dubbed_video"] != nil })?
+            .artifacts["dubbed_video"], FileManager.default.fileExists(atPath: path) else {
+            resultPlayer = nil
+            return
+        }
+        if (resultPlayer?.currentItem?.asset as? AVURLAsset)?.url.path != path {
+            resultPlayer = AVPlayer(url: URL(fileURLWithPath: path))
+        }
+    }
+
+    private func timeline(_ project: ProjectSummary) -> some View {
+        let sourceReady = project.artifacts["source_video"] != nil || FileManager.default.fileExists(atPath: project.source)
+        let speechReady = project.artifacts["source_srt"] != nil || project.artifacts["chinese_srt"] != nil
+        let subtitleReady = project.subtitles.contains { $0.artifacts["translated_srt"] != nil }
+        let dubReady = project.dubs.contains { $0.status == "completed" && $0.artifacts["dubbed_video"] != nil }
+        let stages: [(String, Bool)] = [("Source ready", sourceReady), ("Speech and speakers", speechReady),
+                                        ("Subtitles", subtitleReady), ("Dub and render", dubReady)]
+        let activeIndex = stages.firstIndex { !$0.1 }
+        return GroupBox("Project timeline") {
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(stages.indices, id: \.self) { index in
+                    let stage = stages[index]
+                    let blocked = index == activeIndex && ["failed", "paused", "cancelled"].contains(project.status)
+                    let active = index == activeIndex && project.status == "running"
+                    VStack(alignment: .leading, spacing: 7) {
+                        Image(systemName: stage.1 ? "checkmark.circle.fill" : blocked ? "exclamationmark.circle.fill" : active ? "circle.dotted.circle.fill" : "circle")
+                            .foregroundStyle(stage.1 ? Color.green : blocked ? Color.orange : active ? Color.accentColor : Color.secondary)
+                        Text(stage.0).font(.callout.weight(index == activeIndex ? .semibold : .regular))
+                        Text(stage.1 ? "Ready" : blocked ? "Needs attention" : active ? "In progress" : "Next")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .padding(.vertical, 8)
+            Text("Speaker matching can continue after subtitles become available.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func overviewPreviews(_ project: ProjectSummary) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            GroupBox("Subtitles") {
+                HStack {
+                    Label(project.subtitles.isEmpty ? "No subtitles yet" : "\(project.subtitles.count) subtitle sets available",
+                          systemImage: "captions.bubble")
+                    Spacer()
+                    Button("View All") { state.selection = .subtitles }
+                }.padding(.vertical, 7)
+            }
+            GroupBox("Dub versions") {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(project.dubs.prefix(2)) { dub in
+                        Button { state.selectDub(dub) } label: {
+                            Label("\(dub.title) · \(dub.language.uppercased()) · \(dub.status.capitalized)",
+                                  systemImage: dub.status == "completed" ? "checkmark.circle.fill" : "waveform")
+                        }.buttonStyle(.plain)
+                    }
+                    if project.dubs.isEmpty { Text("No versions yet").foregroundStyle(.secondary) }
+                    Button("View All Versions") { state.selection = .dubs }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 7)
             }
         }
     }
@@ -147,6 +269,12 @@ struct ProjectWorkspaceView: View {
                         .font(.title2.bold())
                     Text(project.stageTitle.isEmpty ? "Preparing your video…" : project.stageTitle)
                         .foregroundStyle(.secondary)
+                    if let started = startTime(project) {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text("Elapsed: \(Int(max(0, context.date.timeIntervalSince(started))) / 60) min · Next: \(nextStage(after: project.stage))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     if let fraction = state.progressFraction ?? project.progress {
                         ProgressView(value: fraction)
                         Text("Current step: \(fraction, format: .percent.precision(.fractionLength(0)))")
@@ -169,27 +297,38 @@ struct ProjectWorkspaceView: View {
                     Text(latest.error ?? "Processing stopped. Your completed subtitles are still available.")
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
-                        Button("Open Dub and Retry") { state.selectDub(latest) }
+                        Button("Retry Failed Step") { state.resumeDub(latest) }
                             .buttonStyle(.borderedProminent)
+                            .disabled(!state.canStartJob)
+                        Button("Details") { state.selectDub(latest) }
                         if hasSubtitles { Button("View Available Subtitles") { state.selection = .subtitles } }
                     }
                 } else if let latest, latest.status == "completed",
+                          !["failed", "paused", "cancelled"].contains(project.status),
                           let path = latest.artifacts["dubbed_video"], FileManager.default.fileExists(atPath: path) {
                     Label("Your dub is ready", systemImage: "checkmark.circle.fill")
                         .font(.title2.bold()).foregroundStyle(.green)
-                    Text("Watch \(latest.title), then export the video or subtitles from its result screen.")
+                    Text("\(latest.title) · \(latest.language.uppercased()). Watch the video below and export it when ready.")
                         .foregroundStyle(.secondary)
                     HStack {
-                        Button("Watch and Export Result") { state.selectDub(latest) }
+                        Button("Watch Result") { overviewScrollTarget = "projectResult" }
                             .buttonStyle(.borderedProminent)
-                        Button("View Subtitles") { state.selection = .subtitles }
+                        Button("Export…") { showingResultExport = true }
                     }
                 } else if project.status == "failed" || project.status == "paused" {
-                    Label("Source analysis needs attention", systemImage: "exclamationmark.triangle.fill")
+                    Label(project.lastRunMode == "subtitles" ? "Subtitle generation needs attention" : "Source analysis needs attention",
+                          systemImage: "exclamationmark.triangle.fill")
                         .font(.title2.bold()).foregroundStyle(.orange)
                     Text(project.lastError ?? "Processing stopped. You can retry without losing completed work.")
-                    Button("Retry Source Analysis") { state.startJob(analysis: true) }
-                        .buttonStyle(.borderedProminent).disabled(!state.canStartJob)
+                    if project.lastRunMode == "subtitles" {
+                        Button("Retry Subtitle Generation") {
+                            state.outputMode = .subtitles
+                            state.selection = .newSubtitles
+                        }.buttonStyle(.borderedProminent)
+                    } else {
+                        Button("Retry Source Analysis") { state.startJob(analysis: true) }
+                            .buttonStyle(.borderedProminent).disabled(!state.canStartJob)
+                    }
                     if hasSubtitles { Button("View Available Subtitles") { state.selection = .subtitles } }
                 } else if hasSubtitles {
                     Label("Subtitles are ready", systemImage: "captions.bubble.fill")
@@ -202,7 +341,7 @@ struct ProjectWorkspaceView: View {
                         Button("Create a Dub") { state.outputMode = .dub; state.selection = .newDub }
                     }
                 } else {
-                    Label("Ready to begin", systemImage: "play.circle.fill")
+                    Label("Ready to analyze", systemImage: "play.circle.fill")
                         .font(.title2.bold())
                     Text("Create a dub to detect the source language, make subtitles, and render a video. You can also make subtitles on their own.")
                         .foregroundStyle(.secondary)
@@ -211,11 +350,27 @@ struct ProjectWorkspaceView: View {
                             .buttonStyle(.borderedProminent)
                         Button("Subtitles Only") { state.selection = .newSubtitles }
                     }
+                    sourcePreview
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
         }
+    }
+
+    private func nextStage(after stage: String) -> String {
+        switch stage {
+        case "downloading", "extracting_audio", "preparing": "Speech and speakers"
+        case "transcribing": "Subtitles"
+        default: "Dub and render"
+        }
+    }
+
+    private func startTime(_ project: ProjectSummary) -> Date? {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return parser.date(from: project.startedAt)
+            ?? ISO8601DateFormatter().date(from: project.startedAt)
     }
 
     private var sourcePreview: some View {
@@ -236,22 +391,19 @@ struct ProjectWorkspaceView: View {
     }
 
     private func sharedAnalysis(_ project: ProjectSummary) -> some View {
-        GroupBox("Shared source analysis") {
+        GroupBox("Reusable source analysis") {
             VStack(alignment: .leading, spacing: 12) {
-                LabeledContent("Transcript", value: project.artifacts["source_srt"] != nil || project.artifacts["chinese_srt"] != nil ? "Ready" : "Pending")
-                LabeledContent("Speakers", value: project.artifacts["character_map"] != nil ? "Ready" : "Pending")
-                LabeledContent("Source subtitles", value: project.artifacts["source_srt"] != nil || project.artifacts["chinese_srt"] != nil ? "Ready" : "Pending")
-                LabeledContent("Source language", value: project.sourceLanguage?.uppercased() ?? "Detecting")
-                if project.analysisRevision > 0 {
-                    LabeledContent("Analysis revision", value: "\(project.analysisRevision)")
-                }
-                Text("These source details are reused by dub versions in this project.")
+                Label(project.artifacts["source_srt"] != nil || project.artifacts["chinese_srt"] != nil ?
+                      "Transcript ready" : "Transcript pending", systemImage: "text.bubble")
+                Label(project.artifacts["character_map"] != nil ? "Speakers identified" : "Speaker matching pending",
+                      systemImage: "person.2")
+                Text("Transcript and speaker identities are reused for new dubs, keeping versions consistent.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Subtitles") { state.selection = .subtitles }
+                    Button("Source Details") { state.selection = .media }
                     Button("Speakers") { state.selection = .characters }
-                    if (project.artifacts["source_srt"] == nil && project.artifacts["chinese_srt"] == nil) ||
-                        project.artifacts["character_map"] == nil {
+                    if ((project.artifacts["source_srt"] == nil && project.artifacts["chinese_srt"] == nil) ||
+                        project.artifacts["character_map"] == nil) && project.status != "running" {
                         Button(project.status == "paused" || project.status == "failed" ? "Retry Source Analysis" : "Analyze Source") {
                             state.startJob(analysis: true)
                         }
@@ -273,6 +425,9 @@ struct ProjectWorkspaceView: View {
             VStack(alignment: .leading, spacing: 14) {
                 LabeledContent("Original source", value: project.source)
                 LabeledContent("Output folder", value: project.outputDir)
+                if project.analysisRevision > 0 {
+                    LabeledContent("Analysis revision", value: "\(project.analysisRevision)")
+                }
                 if let path = project.artifacts["source_video"] {
                     ArtifactLink(title: "Cached original video", path: path)
                 } else {
@@ -331,7 +486,7 @@ struct ProjectWorkspaceView: View {
                                 .foregroundStyle(dub.status == "completed" ? Color.green : Color.secondary)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(dub.title).fontWeight(.medium)
-                                Text("\(dub.language.uppercased()) · \(dub.config["tts_engine"] as? String ?? "Voice pending") · analysis rev \(dub.analysisRevision) · \(dub.createdAt)")
+                                Text("\(dub.language.uppercased()) · \(dub.status.capitalized) · \(dub.createdAt)")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
