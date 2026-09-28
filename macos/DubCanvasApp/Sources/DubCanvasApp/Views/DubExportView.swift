@@ -17,7 +17,7 @@ struct DubExportView: View {
         if let path = dub.artifacts["translated_vtt"] ?? dub.artifacts["english_vtt"] {
             items.append(("Target subtitles", "VTT", path))
         }
-        if let path = dub.artifacts["dubbed_audio"] {
+        if let path = dub.artifacts["dub_audio"] ?? dub.artifacts["dubbed_audio"] {
             items.append(("Dubbed audio", URL(fileURLWithPath: path).pathExtension.uppercased(), path))
         }
         return items

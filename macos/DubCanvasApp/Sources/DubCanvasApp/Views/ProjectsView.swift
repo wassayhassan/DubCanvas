@@ -6,6 +6,8 @@ struct ProjectsView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
     @State private var search = ""
+    @State private var projectToDelete: ProjectSummary?
+    @State private var confirmDelete = false
 
     private var recentProjects: [ProjectSummary] {
         let sorted = state.projects.sorted { $0.updatedAt > $1.updatedAt }
@@ -54,6 +56,15 @@ struct ProjectsView: View {
         .sheet(isPresented: $state.showingSystemCheck) {
             SystemCheckSheet().environmentObject(state)
         }
+        .confirmationDialog("Delete \(projectToDelete?.displayName ?? "project")?", isPresented: $confirmDelete) {
+            if let projectToDelete {
+                Button("Delete Project and Generated Files", role: .destructive) {
+                    state.deleteProject(projectToDelete)
+                }
+            }
+        } message: {
+            Text("This removes the project's subtitles, dubs, cached media, and processing history. The original video file stays on your Mac. This cannot be undone.")
+        }
     }
 
     private var newProjectCard: some View {
@@ -92,6 +103,10 @@ struct ProjectsView: View {
                 }
                 TextField("Search by project name or source", text: $search)
                     .textFieldStyle(.roundedBorder)
+                if let error = state.projectDeletionError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
 
                 if recentProjects.isEmpty {
                     ContentUnavailableView {
@@ -103,10 +118,11 @@ struct ProjectsView: View {
                 } else {
                     LazyVStack(spacing: 8) {
                         ForEach(recentProjects) { project in
-                            Button {
-                                openWindow(id: "workspace", value: WorkspaceRequest.existing(project))
-                            } label: {
-                                HStack(spacing: 12) {
+                            HStack(spacing: 12) {
+                                Button {
+                                    openWindow(id: "workspace", value: WorkspaceRequest.existing(project))
+                                } label: {
+                                    HStack(spacing: 12) {
                                     Image(systemName: "folder.fill")
                                         .font(.title3).foregroundStyle(.tint)
                                     VStack(alignment: .leading, spacing: 4) {
@@ -121,14 +137,26 @@ struct ProjectsView: View {
                                     Spacer(minLength: 8)
                                     Image(systemName: "chevron.right")
                                         .foregroundStyle(.tertiary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
                                 }
-                                .padding(12)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-                                .contentShape(Rectangle())
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Open \(project.displayName)")
+                                Menu {
+                                    Button("Delete Project…", role: .destructive) {
+                                        projectToDelete = project
+                                        confirmDelete = true
+                                    }
+                                    .disabled(project.status == "running" || state.deletingProjectID != nil)
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                }
+                                .menuStyle(.borderlessButton)
+                                .help("Project actions")
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Open \(project.displayName)")
+                            .padding(12)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
                         }
                     }
                 }

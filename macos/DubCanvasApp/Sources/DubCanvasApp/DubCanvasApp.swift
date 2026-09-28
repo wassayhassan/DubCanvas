@@ -48,6 +48,8 @@ struct DubCanvasApp: App {
 
 private struct WorkspaceWindow: View {
     @Binding var request: WorkspaceRequest?
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var state = AppState()
     @State private var initialized = false
     @State private var openedProject = false
@@ -79,6 +81,11 @@ private struct WorkspaceWindow: View {
                       let project = projects.first(where: { $0.id == projectID }) else { return }
                 openedProject = true
                 state.openProject(project)
+            }
+            .onChange(of: state.lastDeletedProjectID) { _, deletedID in
+                guard deletedID != nil, deletedID == request?.projectID else { return }
+                openWindow(id: "welcome")
+                dismiss()
             }
     }
 }

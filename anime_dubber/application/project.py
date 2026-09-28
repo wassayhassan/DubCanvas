@@ -417,6 +417,78 @@ class ProjectStore:
         _atomic_write(self.manifest_path, payload)
         return payload
 
+    def delete_project(self) -> dict:
+        """Remove this project's generated data without touching its source or other projects."""
+        if not self.project_id or Path(self.project_id).name != self.project_id or self.project_id in {".", ".."}:
+            raise ValueError("Invalid project ID")
+        payload = self.load()
+        if not payload:
+            payload = next((row for row in list_projects(self.output_dir)
+                            if row.get("project_id") == self.project_id and row.get("legacy")), None)
+        if not payload:
+            raise FileNotFoundError(f"Project not found: {self.project_id}")
+        if payload.get("status") == "running" or any(d.get("status") == "running" for d in payload.get("dubs", [])):
+            raise ValueError("Stop the active project job before deleting this project")
+
+        source = Path(str(payload.get("source") or "")).expanduser().resolve()
+        cache = self.output_dir / ".anime_dubber_work" / self.project_id
+        version_ids = {str(d.get("id")) for d in payload.get("dubs", []) if d.get("id") != "legacy"}
+        version_ids.update(str(key).split(":", 1)[0] for key in payload.get("subtitles", {}) if ":" in str(key))
+        versions = [self.output_dir / "versions" / version_id for version_id in version_ids
+                    if version_id and Path(version_id).name == version_id and version_id not in {".", ".."}]
+        owned_dirs = [cache, *versions]
+        if any(not directory.resolve().is_relative_to(self.output_dir)
+               for directory in owned_dirs):
+            raise ValueError("Project data folder points outside the output folder")
+        if any(source == directory.resolve() or source.is_relative_to(directory.resolve())
+               for directory in owned_dirs):
+            raise ValueError("The original video is inside this project's generated files. Move it out before deleting the project.")
+
+        # The output folder can contain other projects. Remove only files listed
+        # in this manifest and named for this project; never follow a symlink.
+        artifacts = [payload.get("artifacts", {})]
+        artifacts += [d.get("artifacts", {}) for d in payload.get("dubs", [])]
+        artifacts += [s.get("artifacts", {}) for s in payload.get("subtitles", {}).values()]
+        paths = {Path(str(path)).expanduser() for group in artifacts if isinstance(group, dict)
+                 for kind, path in group.items() if kind != "source_video" and path}
+        if payload.get("legacy"):
+            paths.add(self.output_dir / f"{self.project_id}_run.json")
+        other_paths = set()
+        other_version_ids = set()
+        for other in (self.root / "projects").glob("*.json"):
+            if other == self.manifest_path:
+                continue
+            try:
+                data = json.loads(other.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            groups = [data.get("artifacts", {})]
+            groups += [d.get("artifacts", {}) for d in data.get("dubs", [])]
+            groups += [s.get("artifacts", {}) for s in data.get("subtitles", {}).values()]
+            other_version_ids.update(str(d.get("id")) for d in data.get("dubs", []) if d.get("id"))
+            other_version_ids.update(str(key).split(":", 1)[0] for key in data.get("subtitles", {})
+                                     if ":" in str(key))
+            other_paths.update(Path(str(path)).expanduser().resolve() for group in groups if isinstance(group, dict)
+                               for path in group.values() if path)
+        for path in paths:
+            resolved = path.resolve()
+            if (resolved == source or resolved in other_paths or path.is_symlink()
+                    or path.parent.resolve() != self.output_dir
+                    or not path.name.startswith(self.project_id + "_")):
+                continue
+            if path.is_file():
+                path.unlink()
+        for directory in owned_dirs:
+            if directory.parent == self.output_dir / "versions" and directory.name in other_version_ids:
+                continue
+            if directory.is_symlink():
+                directory.unlink()
+            elif directory.is_dir():
+                shutil.rmtree(directory)
+        self.log_path.unlink(missing_ok=True)
+        self.manifest_path.unlink(missing_ok=True)
+        return {"project_id": self.project_id, "deleted": True}
+
 
 def list_projects(output_dir: Path) -> list[dict]:
     root = Path(output_dir).expanduser().resolve() / ".anime_dubber_project" / "projects"

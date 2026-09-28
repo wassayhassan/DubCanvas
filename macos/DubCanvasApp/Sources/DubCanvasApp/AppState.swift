@@ -85,6 +85,9 @@ final class AppState: ObservableObject {
     @Published var projects: [ProjectSummary] = []
     @Published var selectedProjectID: String?
     @Published var showingDeleteConfirmation = false
+    @Published var deletingProjectID: String?
+    @Published var lastDeletedProjectID: String?
+    @Published var projectDeletionError: String?
 
     var currentProject: ProjectSummary? {
         projects.first { $0.id == selectedProjectID }
@@ -661,6 +664,20 @@ final class AppState: ObservableObject {
         }
     }
 
+    func deleteProject(_ project: ProjectSummary) {
+        guard deletingProjectID == nil else { return }
+        deletingProjectID = project.id
+        projectDeletionError = nil
+        do {
+            _ = try backend.send(method: "delete_project", params: [
+                "output_dir": project.outputDir, "project_id": project.id,
+            ], id: "delete-project-\(UUID().uuidString)")
+        } catch {
+            deletingProjectID = nil
+            projectDeletionError = error.localizedDescription
+        }
+    }
+
     func useProject(_ project: ProjectSummary) {
         openProject(project)
         selection = .newDub
@@ -860,6 +877,10 @@ final class AppState: ObservableObject {
             let message = error?["message"] as? String ?? "Backend request failed."
             activity.append(ActivityEntry(kind: .error, message: message))
             statusText = message
+            if id.hasPrefix("delete-project-") {
+                deletingProjectID = nil
+                projectDeletionError = message
+            }
             if id.hasPrefix("quick-") || (pendingQuickStart && id.hasPrefix("create-project-")) {
                 failQuickStart(message)
             } else if id.hasPrefix("create-project-") || id.hasPrefix("update-project-") {
@@ -1037,6 +1058,17 @@ final class AppState: ObservableObject {
             } else if id.hasPrefix("delete-dub-") {
                 selection = .dubs
                 refreshProjects()
+            } else if id.hasPrefix("delete-project-") {
+                if let deletedID = result["project_id"] as? String {
+                    if selectedProjectID == deletedID {
+                        selectedProjectID = nil
+                        selection = .projects
+                    }
+                    lastDeletedProjectID = deletedID
+                    projects.removeAll { $0.id == deletedID }
+                    refreshProjects()
+                }
+                deletingProjectID = nil
             } else if id.hasPrefix("character-maps-") {
                 let rows = resultAny as? [[String: Any]] ?? []
                 characterMaps = rows.compactMap(CharacterMapSummary.init(dictionary:))
