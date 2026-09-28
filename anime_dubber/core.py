@@ -2112,16 +2112,22 @@ def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, ru
     key = source_key(config.source, out)
     work = out / ".anime_dubber_work" / key; work.mkdir(parents=True, exist_ok=True)
     video = download_source(config.source, work, runner, progress)
+    callback = getattr(runner, "artifact", None)
+    if callback:
+        callback("source_video", video, config.source_language)
     audio = extract_audio(video, work, runner, progress, config)
     vocals, _background = separate_dialogue(audio, work, runner, progress, config)
-    segments, _ = transcribe_source_audio(vocals, audio, config, work, runner, progress)
+    segments, transcript_audio = transcribe_source_audio(vocals, audio, config, work, runner, progress)
     if not segments:
-        raise PipelineError("No speech segments were detected after dialogue separation.")
+        raise PipelineError("No speech was recognized in the original soundtrack. Check that the source video has audible dialogue.")
     zh_srt = out / f"{key}_{config.source_language}.srt"; write_srt(segments, zh_srt, translated=False)
+    source_kind = "chinese" if config.source_language == "zh" else "source"
+    if callback:
+        callback(f"{source_kind}_srt", zh_srt, config.source_language)
     from .characters import analyze_characters, write_character_map
     char_path = _character_map_path(config, out, key)
     profiles, payload = analyze_characters(
-        vocals, segments, work, out, runner, progress,
+        transcript_audio, segments, work, out, runner, progress,
         resume=config.resume, force=config.force, max_speakers=config.max_speakers,
         speaker_threshold=config.speaker_threshold, series_id=config.series_id or key,
         available_voices=list_macos_voices(), override_path=char_path,
@@ -2129,9 +2135,10 @@ def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, ru
     )
     payload["characters"] = [p.to_dict() for p in profiles]
     write_character_map(payload, char_path)
+    if callback:
+        callback("character_map", char_path, config.source_language)
     progress(f"DONE: {char_path}")
-    return {"character_map": char_path,
-            "chinese_srt" if config.source_language == "zh" else "source_srt": zh_srt}
+    return {"character_map": char_path, f"{source_kind}_srt": zh_srt}
 
 def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
     progress = progress or print
@@ -2311,7 +2318,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         # Analyze against source timestamps. If Whisper-direct translation changed segmentation,
         # transfer speaker/style labels to the closest English segment by midpoint overlap.
         profiles, payload = analyze_characters(
-            vocals, zh_segments, work, out, runner, progress,
+            transcript_audio, zh_segments, work, out, runner, progress,
             resume=config.resume, force=config.force, max_speakers=config.max_speakers,
             speaker_threshold=config.speaker_threshold, series_id=config.series_id or key,
             available_voices=list_macos_voices(), override_path=char_path,

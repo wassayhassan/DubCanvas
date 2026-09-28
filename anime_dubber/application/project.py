@@ -413,6 +413,8 @@ def list_projects(output_dir: Path) -> list[dict]:
             "stage": str(data.get("stage") or ""),
             "stage_title": str(data.get("stage_title") or ""),
             "progress": data.get("progress"),
+            "active_job_id": data.get("active_job_id"),
+            "active_pid": data.get("active_pid"),
             "updated_at": str(data.get("updated_at") or ""),
             "created_at": str(data.get("created_at") or ""),
             "artifacts": dict(data.get("artifacts") or {}),

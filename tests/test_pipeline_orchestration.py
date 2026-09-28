@@ -8,10 +8,44 @@ from unittest.mock import patch
 import numpy as np
 
 from anime_dubber.characters import CharacterProfile
-from anime_dubber.core import CommandRunner, Config, Segment, run_pipeline
+from anime_dubber.core import CommandRunner, Config, Segment, analyze_only, run_pipeline
 
 
 class PipelineOrchestrationTests(unittest.TestCase):
+    def test_analysis_keeps_subtitles_when_speaker_analysis_fails_after_audio_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source.mp4"; source.write_bytes(b"video")
+            original = root / "original.wav"; original.write_bytes(b"soundtrack")
+            separated = root / "vocals.wav"; separated.write_bytes(b"silent stem")
+            published = []
+            runner = CommandRunner()
+            runner.artifact = lambda kind, path, language: published.append((kind, Path(path), language))
+            config = Config(source=str(source), output_dir=root / "out", source_language="auto")
+
+            def recognize(audio, cfg, *_args, **_kwargs):
+                if audio == original:
+                    cfg.source_language = "es"
+                    return [Segment(0, 1, "Hola")]
+                return []
+
+            def fail_speaker_analysis(audio, *_args, **_kwargs):
+                self.assertEqual(audio, original)
+                self.assertEqual(published[1][0], "source_srt")
+                self.assertTrue(published[1][1].is_file())
+                raise RuntimeError("speaker analysis failed")
+
+            with patch("anime_dubber.core.extract_audio", return_value=original), \
+                 patch("anime_dubber.core.separate_dialogue", return_value=(separated, original)), \
+                 patch("anime_dubber.core.transcribe_audio", side_effect=recognize), \
+                 patch("anime_dubber.characters.analyze_characters", side_effect=fail_speaker_analysis):
+                with self.assertRaisesRegex(RuntimeError, "speaker analysis failed"):
+                    analyze_only(config, lambda _message: None, runner)
+
+            self.assertEqual([kind for kind, _, _ in published], ["source_video", "source_srt"])
+            self.assertEqual(published[1][2], "es")
+            self.assertIn("Hola", published[1][1].read_text())
+
     def test_detected_spanish_to_japanese_publishes_language_specific_subtitles(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -113,7 +147,8 @@ class PipelineOrchestrationTests(unittest.TestCase):
             def fake_translate(items, *_args, **_kwargs):
                 items[0].translated = "One"; items[1].translated = "Two"; return items
 
-            def fake_analyze(_vocals, items, *_args, **_kwargs):
+            def fake_analyze(speaker_audio, items, *_args, **_kwargs):
+                self.assertEqual(speaker_audio, audio)
                 items[0].speaker_id = "CHAR_001"; items[0].style = "shouting"
                 items[1].speaker_id = "CHAR_002"; items[1].style = "whispering"
                 payload = {"version": 3, "characters": [p1.to_dict(), p2.to_dict()], "segments": []}
@@ -132,7 +167,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
             with patch("anime_dubber.core.download_source", return_value=video), \
                  patch("anime_dubber.core.extract_audio", return_value=audio), \
                  patch("anime_dubber.core.separate_dialogue", return_value=(vocals, bg)), \
-                 patch("anime_dubber.core.transcribe_audio", return_value=segs), \
+                 patch("anime_dubber.core.transcribe_audio", side_effect=[[], segs]), \
                  patch("anime_dubber.core.translate_with_llm", side_effect=fake_translate), \
                  patch("anime_dubber.core.list_macos_voices", return_value=["Alex", "Samantha"]), \
                  patch("anime_dubber.characters.analyze_characters", side_effect=fake_analyze), \

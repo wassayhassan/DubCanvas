@@ -615,7 +615,45 @@ class ApplicationService:
     def list_projects(self, output_dir: str) -> list[dict]:
         if not str(output_dir or "").strip():
             raise ValueError("output_dir is required")
-        return list_project_manifests(Path(output_dir).expanduser())
+        root = Path(output_dir).expanduser()
+        projects = list_project_manifests(root)
+        recovered = False
+        for project in projects:
+            recovered = self._recover_interrupted_project(root, project) or recovered
+        if recovered:
+            return list_project_manifests(root)
+        return projects
+
+    def _recover_interrupted_project(self, output_dir: Path, project: dict) -> bool:
+        """Make jobs left running by a dead backend resumable on next launch."""
+        if project.get("status") != "running" or project.get("legacy"):
+            return False
+        job_id = project.get("active_job_id")
+        with self._lock:
+            if job_id in self._jobs and self._jobs[job_id].status in {"queued", "running"}:
+                return False
+        pid = project.get("active_pid")
+        if pid:
+            try:
+                os.kill(int(pid), 0)
+            except (ProcessLookupError, ValueError):
+                pass
+            except PermissionError:
+                return False
+            else:
+                return False
+        store = ProjectStore(output_dir, str(project.get("source") or ""))
+        if store.project_id != project.get("project_id"):
+            return False
+        current = store.load()
+        if current.get("status") != "running" or current.get("active_job_id") != job_id:
+            return False
+        dub = next((item for item in current.get("dubs", []) if item.get("job_id") == job_id), None)
+        message = ("Processing stopped unexpectedly. Resume this dub to use completed work." if dub else
+                   "Source analysis stopped unexpectedly. Retry it to use completed work.")
+        store.finish(status="paused", error=message,
+                     dub_id=str(dub.get("id") or "") if dub else "")
+        return True
 
     def create_project(self, output_dir: str, source: str, name: str = "", series_id: str = "") -> dict:
         if not output_dir.strip() or not source.strip():
@@ -647,7 +685,11 @@ class ApplicationService:
             raise ValueError("output_dir is required")
         if not str(project_id or "").strip():
             raise ValueError("project_id is required")
-        return load_project(Path(output_dir).expanduser(), str(project_id))
+        root = Path(output_dir).expanduser()
+        project = load_project(root, str(project_id))
+        if self._recover_interrupted_project(root, project):
+            return load_project(root, str(project_id))
+        return project
 
     def list_character_maps(self, output_dir: str) -> list[dict]:
         if not str(output_dir or "").strip():
