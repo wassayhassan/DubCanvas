@@ -2258,15 +2258,21 @@ def speaker_analysis_audio(vocals: Path, original: Path, progress: ProgressCallb
 def transcribe_before_separation(
     audio: Path, config: Config, work: Path, runner: CommandRunner, progress: ProgressCallback,
 ) -> Tuple[List[Segment], Path]:
-    """Publishable source speech comes first; separation is a last ASR recovery path."""
-    segments = transcribe_audio(audio, config, work, runner, progress, task="transcribe")
-    if segments:
-        return segments, audio
-    progress("No speech found in the original soundtrack; trying separated dialogue…")
-    vocals, _ = separate_dialogue(audio, work, runner, progress, config)
-    separated_work = work / "separated_asr"
+    """Recognize isolated dialogue first, falling back to the original soundtrack."""
+    try:
+        vocals, _ = separate_dialogue(audio, work, runner, progress, config)
+    except CancelledError:
+        raise
+    except PipelineError as exc:
+        progress(f"Dialogue separation failed; transcribing the original soundtrack instead: {exc}")
+        fallback_work = work / "original_soundtrack_asr_v1"
+        fallback_work.mkdir(parents=True, exist_ok=True)
+        return transcribe_audio(audio, config, fallback_work, runner, progress, task="transcribe"), audio
+    # A distinct checkpoint avoids reusing transcripts made from the mixed
+    # soundtrack by older versions of the app.
+    separated_work = work / "vocals_primary_asr_v1"
     separated_work.mkdir(parents=True, exist_ok=True)
-    return transcribe_audio(vocals, config, separated_work, runner, progress, task="transcribe"), vocals
+    return transcribe_source_audio(vocals, audio, config, separated_work, runner, progress)
 
 
 def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
@@ -2362,7 +2368,9 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     elif translation_mode == "ollama":
         segments = translate_with_ollama_provider(zh_segments, config, work, runner, progress)
     elif translation_mode == "whisper":
-        translation_work = work if transcript_audio == audio else work / "separated_asr"
+        translation_work = (work / "original_soundtrack_asr_v1" if transcript_audio == audio
+                            else work / "vocals_primary_asr_v1")
+        translation_work.mkdir(parents=True, exist_ok=True)
         en_whisper = transcribe_audio(transcript_audio, config, translation_work, runner, progress, task="translate")
         segments = [Segment(s.start, s.end, s.text, s.text) for s in en_whisper]
     else:

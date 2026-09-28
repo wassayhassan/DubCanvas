@@ -2,8 +2,10 @@ import tempfile
 import unittest
 import json
 import shutil
+import sys
+import types
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -36,19 +38,48 @@ class PipelineOrchestrationTests(unittest.TestCase):
             self.assertNotIn("translated_srt", published)
             separation.assert_not_called()
 
-    def test_no_speech_in_original_tries_separated_audio(self):
+    def test_separated_dialogue_is_transcribed_before_original_soundtrack(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
             original = work / "original.wav"; vocals = work / "vocals.wav"
             config = Config(source="video.mp4", output_dir=work)
-            with patch("anime_dubber.core.transcribe_audio", side_effect=[[], [Segment(0, 1, "Speech")]]) as asr, \
+            with patch("anime_dubber.core.transcribe_audio", return_value=[Segment(0, 1, "Speech")]) as asr, \
                  patch("anime_dubber.core.separate_dialogue", return_value=(vocals, work / "bg.wav")):
                 segments, transcript_audio = transcribe_before_separation(original, config, work, CommandRunner(), lambda _: None)
-            self.assertEqual([call.args[0] for call in asr.call_args_list], [original, vocals])
+            self.assertEqual([call.args[0] for call in asr.call_args_list], [vocals])
+            self.assertEqual(asr.call_args.args[2], work / "vocals_primary_asr_v1")
             self.assertEqual(segments[0].text, "Speech")
             self.assertEqual(transcript_audio, vocals)
 
-    def test_subtitles_retry_separated_audio_and_direct_translation_uses_that_stem(self):
+    def test_empty_separated_dialogue_tries_original_without_old_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            original = work / "original.wav"; vocals = work / "vocals.wav"
+            config = Config(source="video.mp4", output_dir=work)
+            with patch("anime_dubber.core.transcribe_audio",
+                       side_effect=[[], [Segment(0, 1, "Recovered")]]) as asr, \
+                 patch("anime_dubber.core.separate_dialogue", return_value=(vocals, work / "bg.wav")):
+                segments, selected = transcribe_before_separation(original, config, work, CommandRunner(), lambda _: None)
+            self.assertEqual([call.args[0] for call in asr.call_args_list], [vocals, original])
+            self.assertEqual(asr.call_args.args[2], work / "vocals_primary_asr_v1" / "original_soundtrack_asr")
+            self.assertEqual((segments[0].text, selected), ("Recovered", original))
+
+    def test_old_mixed_soundtrack_transcript_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            (work / "transcript_zh_mlx_whisper_v5_precise.json").write_text(
+                json.dumps([Segment(0, 1, "Incorrect old transcript").to_dict()]))
+            audio = work / "original.wav"; vocals = work / "vocals.wav"
+            cfg = Config(source="video.mp4", output_dir=work, asr_provider="mlx_whisper")
+            recognize = Mock(return_value={"language": "zh", "segments": [
+                {"start": 0, "end": 1, "text": "正确的新对白"}]})
+            with patch("anime_dubber.core.separate_dialogue", return_value=(vocals, work / "bg.wav")), \
+                 patch.dict(sys.modules, {"mlx_whisper": types.SimpleNamespace(transcribe=recognize)}):
+                segments, selected = transcribe_before_separation(audio, cfg, work, CommandRunner(), lambda _: None)
+            recognize.assert_called_once()
+            self.assertEqual((segments[0].text, selected), ("正确的新对白", vocals))
+
+    def test_direct_translation_uses_the_same_separated_dialogue_stem(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); video = root / "video.mp4"; video.write_bytes(b"video")
             audio = root / "original.wav"; vocals = root / "vocals.wav"
@@ -64,7 +95,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
                  patch("anime_dubber.core.separate_dialogue", return_value=(vocals, root / "bg.wav")), \
                  patch("anime_dubber.core.transcribe_audio", side_effect=transcribe):
                 results = run_pipeline(cfg, lambda _: None, CommandRunner())
-            self.assertEqual(calls, [(audio, "transcribe"), (vocals, "transcribe"), (vocals, "translate")])
+            self.assertEqual(calls, [(vocals, "transcribe"), (vocals, "translate")])
             self.assertIn("Hello", results["translated_srt"].read_text())
 
     def test_dub_publishes_both_subtitle_sets_before_separation_failure(self):
@@ -101,6 +132,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
             config = Config(source=str(source), output_dir=root / "out", source_language="zh",
                             target_language="en", translation="whisper", mode="subtitles")
             with patch("anime_dubber.core.extract_audio", return_value=audio), \
+                 patch("anime_dubber.core.separate_dialogue", return_value=(audio, audio)), \
                  patch("anime_dubber.core.transcribe_audio", side_effect=[[Segment(0, 1, "你好")], []]):
                 with self.assertRaisesRegex(PipelineError, "Translation returned no usable dialogue"):
                     run_pipeline(config, lambda _message: None, runner)

@@ -275,6 +275,7 @@ class ProjectVersionsTests(unittest.TestCase):
 
             with patch("anime_dubber.core.download_source", return_value=video), \
                  patch("anime_dubber.core.extract_audio", return_value=audio), \
+                 patch("anime_dubber.core.separate_dialogue", return_value=(audio, audio)), \
                  patch("anime_dubber.core.transcribe_audio", return_value=[Segment(0, 1, "你好")]), \
                  patch("anime_dubber.core.translate_with_llm", side_effect=translation):
                 config = Config(source=str(video), output_dir=output, mode="subtitles", translation="llm", version_id="sub_test")
