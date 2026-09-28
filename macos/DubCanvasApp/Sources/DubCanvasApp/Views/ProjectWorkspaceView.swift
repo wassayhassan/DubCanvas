@@ -10,7 +10,17 @@ struct ProjectWorkspaceView: View {
     @State private var sourcePlayer: AVPlayer?
     @State private var resultPlayer: AVPlayer?
     @SceneStorage("overviewScrollTarget") private var overviewScrollTarget: String?
+    @SceneStorage("sourceScrollTarget") private var sourceScrollTarget: String?
+    @SceneStorage("dubsScrollTarget") private var dubsScrollTarget: String?
     @SceneStorage("overviewScrollProjectID") private var overviewScrollProjectID = ""
+
+    private var scrollTarget: Binding<String?> {
+        switch state.selection {
+        case .some(.media): $sourceScrollTarget
+        case .some(.dubs): $dubsScrollTarget
+        default: $overviewScrollTarget
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -31,7 +41,7 @@ struct ProjectWorkspaceView: View {
                 ContentUnavailableView("Open a Project", systemImage: "folder", description: Text("Choose a project in the library."))
             }
         }
-        .scrollPosition(id: $overviewScrollTarget)
+        .scrollPosition(id: scrollTarget)
         .navigationTitle(state.currentProject?.displayName ?? "Project")
         .sheet(isPresented: $showingComparison) {
             if let project = state.currentProject {
@@ -58,6 +68,8 @@ struct ProjectWorkspaceView: View {
                 if overviewScrollProjectID != project.id {
                     overviewScrollProjectID = project.id
                     overviewScrollTarget = "projectHeader"
+                    sourceScrollTarget = "projectHeader"
+                    dubsScrollTarget = "projectHeader"
                 }
                 loadSource(project)
                 loadResult(project)
@@ -69,6 +81,8 @@ struct ProjectWorkspaceView: View {
             if let projectID = state.selectedProjectID, projectID != overviewScrollProjectID {
                 overviewScrollProjectID = projectID
                 overviewScrollTarget = "projectHeader"
+                sourceScrollTarget = "projectHeader"
+                dubsScrollTarget = "projectHeader"
             }
             if let project = state.currentProject { loadSource(project); loadResult(project) }
         }
@@ -200,8 +214,11 @@ struct ProjectWorkspaceView: View {
     }
 
     private func timeline(_ project: ProjectSummary) -> some View {
-        let sourceReady = project.artifacts["source_video"] != nil || FileManager.default.fileExists(atPath: project.source)
-        let speechReady = project.artifacts["source_srt"] != nil || project.artifacts["chinese_srt"] != nil
+        let sourceReady = project.artifacts["source_video"] != nil ||
+            project.source.hasPrefix("http://") || project.source.hasPrefix("https://") ||
+            FileManager.default.fileExists(atPath: project.source)
+        let speechReady = (project.artifacts["source_srt"] != nil || project.artifacts["chinese_srt"] != nil) &&
+            project.artifacts["character_map"] != nil
         let subtitleReady = project.subtitles.contains { $0.artifacts["translated_srt"] != nil }
         let dubReady = project.dubs.contains { $0.status == "completed" && $0.artifacts["dubbed_video"] != nil }
         let stages: [(String, Bool)] = [("Source ready", sourceReady), ("Speech and speakers", speechReady),
@@ -225,7 +242,7 @@ struct ProjectWorkspaceView: View {
                 }
             }
             .padding(.vertical, 8)
-            Text("Speaker matching can continue after subtitles become available.")
+            Text("Speech can be ready while speaker matching continues; this stage finishes when both are available.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -280,10 +297,11 @@ struct ProjectWorkspaceView: View {
                         Text("Current step: \(fraction, format: .percent.precision(.fractionLength(0)))")
                             .font(.caption).foregroundStyle(.secondary)
                     } else { ProgressView() }
+                    Button("View Progress") { overviewScrollTarget = "projectTimeline" }
+                        .buttonStyle(.borderedProminent)
                     if hasSubtitles {
                         Label("Subtitles are ready. You can view or save them while the dub continues.", systemImage: "captions.bubble.fill")
                         Button("View Subtitles") { state.selection = .subtitles }
-                            .buttonStyle(.borderedProminent)
                     } else {
                         Text("Source subtitles appear after speech recognition; translated subtitles appear before voices are generated.")
                             .font(.callout).foregroundStyle(.secondary)
@@ -381,13 +399,21 @@ struct ProjectWorkspaceView: View {
                         .frame(height: 220)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
-                    ContentUnavailableView("Source video unavailable", systemImage: "film",
-                        description: Text("The saved video path is not available on this Mac. Check whether the file was moved or deleted."))
+                    ContentUnavailableView(projectSourceIsRemote ? "Video ready to download" : "Source video unavailable",
+                        systemImage: "film",
+                        description: Text(projectSourceIsRemote
+                            ? "The source preview appears after processing downloads this video."
+                            : "The saved video path is not available on this Mac. Check whether the file was moved or deleted."))
                         .frame(height: 220)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var projectSourceIsRemote: Bool {
+        guard let source = state.currentProject?.source else { return false }
+        return source.hasPrefix("https://") || source.hasPrefix("http://")
     }
 
     private func sharedAnalysis(_ project: ProjectSummary) -> some View {
