@@ -304,8 +304,10 @@ def synthesize_chatterbox(
 
     import torchaudio as ta
 
-    # Turbo does not support CFG. Standard Chatterbox can lower accent transfer
-    # from a non-English reference with CFG=0 while keeping its speaker prompt.
+    # Turbo does not support CFG. Standard Chatterbox requires two text sequences
+    # even when guidance is effectively disabled: its inference always adds a
+    # two-sequence BOS embedding. Exactly zero creates only one text sequence
+    # and fails with a 1-vs-2 tensor size mismatch upstream.
     use_turbo = turbo and not (american_english and ref)
     resolved_device = _best_torch_device(device)
     model = _load_chatterbox(resolved_device, use_turbo)
@@ -313,7 +315,7 @@ def synthesize_chatterbox(
     exaggeration = max(0.0, min(1.5, float(expressiveness)))
     kwargs = {} if use_turbo else {"exaggeration": exaggeration}
     if american_english and ref:
-        kwargs["cfg_weight"] = 0.0
+        kwargs["cfg_weight"] = 1e-6
     if ref:
         kwargs["audio_prompt_path"] = ref
 

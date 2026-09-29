@@ -137,7 +137,13 @@ class CrossPlatformProviderTests(unittest.TestCase):
             reference = Path(td) / "reference.wav"
             reference.write_bytes(b"reference")
             output = Path(td) / "dub.wav"
-            model = types.SimpleNamespace(sr=24000, generate=Mock(return_value=FakeAudio()))
+            def generate(_text, **kwargs):
+                # Standard Chatterbox fails when zero CFG makes its text batch
+                # smaller than its unconditional speech batch.
+                if kwargs.get("cfg_weight") == 0.0:
+                    raise RuntimeError("Sizes of tensors must match except in dimension 1. Expected size 1 but got size 2")
+                return FakeAudio()
+            model = types.SimpleNamespace(sr=24000, generate=Mock(side_effect=generate))
             fake_audio = types.SimpleNamespace(save=lambda path, _audio, _rate: Path(path).write_bytes(b"w" * 60))
             with patch.dict("sys.modules", {"torchaudio": fake_audio}), \
                  patch("anime_dubber.providers.tts.chatterbox_available", return_value=True), \
@@ -147,7 +153,8 @@ class CrossPlatformProviderTests(unittest.TestCase):
                 synthesize_chatterbox("Hello", output, reference_audio=str(reference),
                                       turbo=True, american_english=True)
                 load.assert_called_once_with("cpu", False)
-                self.assertEqual(model.generate.call_args.kwargs["cfg_weight"], 0.0)
+                self.assertGreater(model.generate.call_args.kwargs["cfg_weight"], 0.0)
+                self.assertLess(model.generate.call_args.kwargs["cfg_weight"], 0.001)
                 self.assertEqual(model.generate.call_args.kwargs["audio_prompt_path"], str(reference.resolve()))
                 self.assertTrue(output.is_file())
 
