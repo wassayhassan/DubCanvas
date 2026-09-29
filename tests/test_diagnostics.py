@@ -15,6 +15,16 @@ from anime_dubber.core import CommandRunner, audio_diagnostic_summary
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_log_storage_failure_does_not_replace_processing_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = DiagnosticLog(Path(td), "job_test", {})
+            with patch.object(Path, "open", side_effect=OSError("disk full")):
+                log.change_stage("transcribing")
+                payload = log.write("Recognition failed", "error", {"traceback": "original model error"})
+            self.assertEqual(payload["stage"], "transcribing")
+            self.assertEqual(payload["details"]["traceback"], "original model error")
+            self.assertEqual(payload["details"]["log_write_error"], "disk full")
+
     def test_audio_summary_identifies_silent_and_non_silent_input(self):
         with tempfile.TemporaryDirectory() as td:
             for level in (0, 5000):

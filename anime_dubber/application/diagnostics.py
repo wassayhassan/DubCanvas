@@ -32,6 +32,7 @@ class DiagnosticLog:
         self.stage = "preparing"
         self.started = self.stage_started = time.monotonic()
         self.lock = threading.RLock()
+        self.initialized = False
         self.secrets = [str(v) for k, v in config.items() if
                         any(term in k.lower() for term in ("api_key", "password", "token", "secret")) and v]
         self.secrets += [value for key, value in os.environ.items() if value and
@@ -45,6 +46,7 @@ class DiagnosticLog:
         self.write("Job started", details={"app_version": __version__, "job_id": job_id,
                    "platform": platform.platform(), "python": sys.version, "models": versions,
                    "config": config})
+        self.initialized = True
 
     def redact(self, value):
         if isinstance(value, dict):
@@ -69,8 +71,12 @@ class DiagnosticLog:
             self.write("Stage finished", details={"duration_seconds": round(time.monotonic() - self.stage_started, 3)})
             self.stage = stage
             self.stage_started = time.monotonic()
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(f"\n=== {stage.replace('_', ' ').upper()} ===\n")
+            try:
+                with self.path.open("a", encoding="utf-8") as handle:
+                    handle.write(f"\n=== {stage.replace('_', ' ').upper()} ===\n")
+            except OSError:
+                # write() reports persistence failures without stopping processing.
+                pass
             self.write("Stage started")
 
     def write(self, message: object, level: str = "info", details: dict | None = None) -> dict:
@@ -78,14 +84,19 @@ class DiagnosticLog:
                    "stage": self.stage, "level": level, "elapsed_seconds": round(time.monotonic() - self.started, 3),
                    "message": clean_text(message), "details": details or {}})
         with self.lock:
-            with self.json_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
-            with self.path.open("a", encoding="utf-8") as handle:
-                prefix = f"{payload['timestamp']} +{payload['elapsed_seconds']:.3f}s [{self.stage}] [{level.upper()}] "
-                for line in payload["message"].splitlines():
-                    handle.write(prefix + line + "\n")
-                if payload["details"]:
-                    handle.write(json.dumps(payload["details"], ensure_ascii=False, indent=2, default=str) + "\n")
+            try:
+                with self.json_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+                with self.path.open("a", encoding="utf-8") as handle:
+                    prefix = f"{payload['timestamp']} +{payload['elapsed_seconds']:.3f}s [{self.stage}] [{level.upper()}] "
+                    for line in payload["message"].splitlines():
+                        handle.write(prefix + line + "\n")
+                    if payload["details"]:
+                        handle.write(json.dumps(payload["details"], ensure_ascii=False, indent=2, default=str) + "\n")
+            except OSError as exc:
+                if not self.initialized:
+                    raise  # Service can choose a writable fallback at startup.
+                payload["details"]["log_write_error"] = self.redact(str(exc))
         return payload
 
 
