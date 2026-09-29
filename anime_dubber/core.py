@@ -65,6 +65,10 @@ class PipelineError(RuntimeError):
     pass
 
 
+class TranscriptionQualityError(PipelineError):
+    """Recognition produced a suspicious transcript that must be retried."""
+
+
 class CancelledError(PipelineError):
     pass
 
@@ -937,6 +941,25 @@ def _precise_row_bounds(row: dict) -> Tuple[float, float]:
     return start, end
 
 
+def validate_transcript_content(segments: List[Segment]) -> None:
+    """Reject repeated credit-only recognition without dropping real dialogue.
+
+    Whisper can hallucinate an identical copyright credit on weak/silent audio.
+    Repetition alone is not sufficient: songs and dialogue can legitimately
+    repeat. Retry this narrow pattern as a whole instead of deleting cues.
+    """
+    texts = [re.sub(r"\s+", " ", s.text).strip().casefold() for s in segments if s.text.strip()]
+    credits = [text for text in texts if re.search(r"©|\bcopyright\b|\ball rights reserved\b", text)]
+    if credits:
+        repeated = max(credits.count(text) for text in set(credits))
+        if repeated >= 3 and repeated / len(texts) >= 0.75:
+            raise TranscriptionQualityError(
+                "Speech recognition returned repeated copyright credits instead of reliable dialogue. "
+                "This transcript cannot be used for a dub. Check the video's audio track, "
+                "set its spoken language explicitly, and retry transcription."
+            )
+
+
 def transcribe_audio(
     audio: Path,
     config: Config,
@@ -1007,6 +1030,7 @@ def transcribe_audio(
             cleaned = sanitize_segments(raw_cached)
             if not cleaned:
                 raise ValueError("No usable transcript segments")
+            validate_transcript_content(cleaned)
             if len(cleaned) != len(raw_cached) or any(
                 abs(a.start - b.start) > 1e-6 or abs(a.end - b.end) > 1e-6 or a.text != b.text
                 for a, b in zip(cleaned, raw_cached)
@@ -1017,7 +1041,7 @@ def transcribe_audio(
                 detected = json.loads(detection_path.read_text(encoding="utf-8"))
                 config.source_language = str(detected["language"])
             return cleaned
-        except (ValueError, TypeError, KeyError, OSError):
+        except (ValueError, TypeError, KeyError, OSError, TranscriptionQualityError):
             progress("Transcript cache was incomplete; rebuilding this stage…")
     initial_prompt = (
         "玄幻 修仙 系统 天墟圣殿 胤天绝 修为 灵根 境界 宗主 掌门 长老 老祖 天劫 丹田 元神 法宝"
@@ -1080,13 +1104,8 @@ def transcribe_audio(
         progress("Speech recognition returned no speech segments for this audio track")
         return []
 
-    if task == "transcribe" and config.source_language == "auto":
-        if not detected_language or detected_language == "auto":
-            raise PipelineError("Could not detect the source language. Set the source language explicitly and retry.")
-        config.source_language = detected_language
-        _atomic_json_write(detection_path, {"language": detected_language})
-        progress(f"Detected source language: {source_name(detected_language)} ({detected_language})")
-
+    # Validate before committing the language guess or caching this result.
+    # A hallucinated English credit must not constrain the original-audio retry.
     raw_segs = []
     for x in provider_rows:
         text = str(x.get("text", "")).strip()
@@ -1095,6 +1114,15 @@ def transcribe_audio(
         precise_start, precise_end = _precise_row_bounds(x)
         raw_segs.append(Segment(precise_start, precise_end, text))
     segs = sanitize_segments(raw_segs)
+    validate_transcript_content(segs)
+
+    if task == "transcribe" and config.source_language == "auto":
+        if not detected_language or detected_language == "auto":
+            raise PipelineError("Could not detect the source language. Set the source language explicitly and retry.")
+        config.source_language = detected_language
+        _atomic_json_write(detection_path, {"language": detected_language})
+        progress(f"Detected source language: {source_name(detected_language)} ({detected_language})")
+
     if len(segs) != len(raw_segs) or any(
         abs(a.start - b.start) > 1e-6 or abs(a.end - b.end) > 1e-6 or a.text != b.text
         for a, b in zip(segs, raw_segs)
@@ -2217,9 +2245,16 @@ def transcribe_source_audio(
     runner: CommandRunner, progress: ProgressCallback,
 ) -> Tuple[List[Segment], Path]:
     requested_language = config.source_language
-    segments = transcribe_audio(dialogue, config, work, runner, progress, task="transcribe")
+    retry_reason = "No speech found in separated dialogue"
+    try:
+        segments = transcribe_audio(dialogue, config, work, runner, progress, task="transcribe")
+    except TranscriptionQualityError:
+        if dialogue == original:
+            raise
+        retry_reason = "Separated dialogue produced repeated credits"
+        segments = []
     if not segments and dialogue != original:
-        progress("No speech found in separated dialogue; retrying the original soundtrack automatically…")
+        progress(f"{retry_reason}; retrying the original soundtrack automatically…")
         # A language guess made from an empty stem must not constrain the retry.
         config.source_language = requested_language
         fallback_work = work / "original_soundtrack_asr"
