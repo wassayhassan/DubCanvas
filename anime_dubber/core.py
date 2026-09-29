@@ -1810,7 +1810,8 @@ def render_dub_timeline(
     progress: ProgressCallback,
 ) -> Path:
     timeline_signature = hashlib.sha1(json.dumps({
-        "segments": [[round(s.start, 3), round(s.end, 3), str(p)] for s, p in zip(segments, clips)],
+        "segments": [[round(s.start, 3), round(s.end, 3), str(p), p.stat().st_size,
+                      p.stat().st_mtime_ns] for s, p in zip(segments, clips)],
         "duration": round(total_duration, 3),
         "chunk_seconds": int(config.chunk_seconds),
     }, sort_keys=True).encode("utf-8")).hexdigest()[:12]
@@ -2783,7 +2784,12 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     duration_callback = getattr(runner, "duration", None)
     if duration_callback:
         duration_callback(total_duration)
-    dub_timeline = render_dub_timeline(segments, clips, total_duration, work, config, runner, progress)
+    from .visual_sync import align_dub_to_visible_speech
+    timeline_segments = align_dub_to_visible_speech(
+        video, segments, clips, work, runner, progress, total_duration=total_duration,
+        resume=config.resume, force=config.force,
+    )
+    dub_timeline = render_dub_timeline(timeline_segments, clips, total_duration, work, config, runner, progress)
     background_bed = build_dialogue_safe_background(
         audio, background, zh_segments, total_duration, work, config, runner, progress
     )

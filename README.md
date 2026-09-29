@@ -45,6 +45,7 @@ If an existing `AnimeDubberOutput` folder is present, the CLI continues using it
 
 - Supported target languages in the macOS app include English, Spanish, French, German, Japanese, Korean, Chinese, Portuguese, Italian, Hindi, and Arabic. Voice availability depends on installed models and providers.
 - Subtitles are saved as SRT/VTT files; finished dub versions include an exported video and review details.
+- DubCanvas checks a clearly visible single face for speech onset and makes small automatic audio timing corrections when confident. It keeps source timing for animated faces it cannot track, off-screen speakers, and ambiguous shots; it does not redraw mouths.
 - Results are generated automatically, so check names, translations, and timing before publishing.
 - Keep the project's work folder if you want to pause or resume a dub.
 

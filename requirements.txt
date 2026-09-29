@@ -3,3 +3,4 @@ mlx-lm
 demucs>=4.1.0,<5
 numpy>=1.26
 soundfile>=0.12
+opencv-python-headless>=4.10,<5
