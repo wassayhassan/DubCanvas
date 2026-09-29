@@ -38,7 +38,7 @@ class DiagnosticLog:
         self.secrets += [value for key, value in os.environ.items() if value and
                          key in {"ELEVENLABS_API_KEY", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"}]
         versions = {}
-        for package in ("mlx-whisper", "mlx-lm", "faster-whisper", "torch", "chatterbox-tts", "demucs"):
+        for package in ("numpy", "opencv-python-headless", "mlx-whisper", "mlx-lm", "faster-whisper", "torch", "chatterbox-tts", "demucs"):
             try:
                 versions[package] = importlib.metadata.version(package)
             except importlib.metadata.PackageNotFoundError:

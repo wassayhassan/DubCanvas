@@ -679,7 +679,7 @@ def translate_with_llm(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> List[Segment]:
-    runner.set_stage("translating", "Translating subtitles")
+    getattr(runner, "set_stage", lambda *_: None)("translating", "Translating subtitles")
     target = target_name(config.target_language)
     source = source_name(config.source_language)
     signature_inputs = {
@@ -804,7 +804,7 @@ def translate_with_ollama_provider(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> List[Segment]:
-    runner.set_stage("translating", "Translating subtitles")
+    getattr(runner, "set_stage", lambda *_: None)("translating", "Translating subtitles")
     target = target_name(config.target_language)
     source = source_name(config.source_language)
     from .providers.translation import translate_with_ollama
@@ -1003,9 +1003,9 @@ def transcribe_audio(
 ) -> List[Segment]:
     from .providers.asr import resolve_asr_provider
 
-    runner.set_stage("transcribing" if task == "transcribe" else "translating", "Recognizing speech" if task == "transcribe" else "Translating speech")
+    getattr(runner, "set_stage", lambda *_: None)("transcribing" if task == "transcribe" else "translating", "Recognizing speech" if task == "transcribe" else "Translating speech")
     provider = resolve_asr_provider(config.asr_provider)
-    runner.diagnostic("Transcription input", audio=str(audio), task=task, requested_language=config.source_language,
+    getattr(runner, "diagnostic", lambda *_, **__: None)("Transcription input", audio=str(audio), task=task, requested_language=config.source_language,
                       provider=provider, model=config.faster_whisper_model if provider == "faster_whisper" else config.mlx_whisper_model,
                       bytes=audio.stat().st_size if audio.is_file() else None, audio_summary=audio_diagnostic_summary(audio))
     requested_language = config.source_language.lower()
@@ -1067,7 +1067,7 @@ def transcribe_audio(
             if not cleaned:
                 raise ValueError("No usable transcript segments")
             validate_transcript_content(cleaned)
-            runner.diagnostic("Transcript cache reused", cache=str(cache_to_read), cues=len(cleaned))
+            getattr(runner, "diagnostic", lambda *_, **__: None)("Transcript cache reused", cache=str(cache_to_read), cues=len(cleaned))
             if len(cleaned) != len(raw_cached) or any(
                 abs(a.start - b.start) > 1e-6 or abs(a.end - b.end) > 1e-6 or a.text != b.text
                 for a, b in zip(cleaned, raw_cached)
@@ -1151,7 +1151,7 @@ def transcribe_audio(
         precise_start, precise_end = _precise_row_bounds(x)
         raw_segs.append(Segment(precise_start, precise_end, text))
     segs = sanitize_segments(raw_segs)
-    runner.diagnostic("Recognition output", detected_language=detected_language, raw_cues=len(raw_segs),
+    getattr(runner, "diagnostic", lambda *_, **__: None)("Recognition output", detected_language=detected_language, raw_cues=len(raw_segs),
                       usable_cues=len(segs), speech_seconds=round(sum(s.end - s.start for s in segs), 3),
                       first_cues=[s.to_dict() for s in segs[:5]],
                       confidence=[{key: row.get(key) for key in ("avg_logprob", "no_speech_prob", "compression_ratio")}
@@ -1201,7 +1201,7 @@ def _locate_downloaded_source(work_dir: Path, stdout: str = "") -> Optional[Path
 
 
 def download_source(source: str, work_dir: Path, runner: CommandRunner, progress: ProgressCallback) -> Path:
-    runner.set_stage("downloading" if is_url(source) else "validating_source", "Checking source video")
+    getattr(runner, "set_stage", lambda *_: None)("downloading" if is_url(source) else "validating_source", "Checking source video")
     if not is_url(source):
         p = Path(source).expanduser().resolve()
         if not p.exists():
@@ -1322,7 +1322,7 @@ def download_source(source: str, work_dir: Path, runner: CommandRunner, progress
 
 
 def extract_audio(video: Path, work_dir: Path, runner: CommandRunner, progress: ProgressCallback, config: Config) -> Path:
-    runner.set_stage("extracting_audio", "Extracting source audio")
+    getattr(runner, "set_stage", lambda *_: None)("extracting_audio", "Extracting source audio")
     validate_media_streams(video, runner)
     audio = work_dir / "original.wav"
     if config.resume and _complete_wav(audio) and not config.force:
@@ -1350,7 +1350,7 @@ def separate_dialogue(
     progress: ProgressCallback,
     config: Config,
 ) -> Tuple[Path, Path]:
-    runner.set_stage("separating_stems", "Separating dialogue and background")
+    getattr(runner, "set_stage", lambda *_: None)("separating_stems", "Separating dialogue and background")
     stems_dir = work_dir / "stems"
     vocals = _find_stem(stems_dir, "vocals.wav")
     bg = _find_stem(stems_dir, "no_vocals.wav")
@@ -1549,7 +1549,7 @@ def prepare_tts_clip(
     next_start: Optional[float] = None,
     max_tempo: float = 1.0,
 ) -> Path:
-    runner.set_stage("synthesizing", "Generating dub voices")
+    getattr(runner, "set_stage", lambda *_: None)("synthesizing", "Generating dub voices")
     text = (seg.translated or seg.text).strip()
     if not text:
         raise PipelineError(f"Empty translated text for segment {index}")
@@ -1696,7 +1696,7 @@ def prepare_tts_clip(
     else:
         valid_source = False
 
-    runner.diagnostic("Voice synthesis", line=index + 1, speaker=seg.speaker_id, provider=resolved_tts,
+    getattr(runner, "diagnostic", lambda *_, **__: None)("Voice synthesis", line=index + 1, speaker=seg.speaker_id, provider=resolved_tts,
                       reference=chatterbox_reference, american_english=american_english,
                       text=text, window=[seg.start, seg.end], next_start=next_start, reused=valid_source)
     if valid_source:
@@ -1886,7 +1886,7 @@ def render_dub_timeline(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> Path:
-    runner.set_stage("mixing", "Rendering the dub timeline")
+    getattr(runner, "set_stage", lambda *_: None)("mixing", "Rendering the dub timeline")
     timeline_signature = hashlib.sha1(json.dumps({
         "segments": [[round(s.start, 3), round(s.end, 3), str(p), p.stat().st_size,
                       p.stat().st_mtime_ns] for s, p in zip(segments, clips)],
@@ -2133,7 +2133,7 @@ def mix_background_and_dub(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> Path:
-    runner.set_stage("mixing", "Mixing background and dub")
+    getattr(runner, "set_stage", lambda *_: None)("mixing", "Mixing background and dub")
     mix_signature = hashlib.sha1(json.dumps({
         "background": [background.name, background.stat().st_size],
         "dub": [str(dub), dub.stat().st_size],
@@ -2196,7 +2196,7 @@ def _mix_to_temp(background, dub, temp, out, bg_duration, config, runner, progre
 
 def mux_video(video: Path, audio: Path, final: Path, runner: CommandRunner,
               progress: ProgressCallback, extend_by: float = 0.0) -> None:
-    runner.set_stage("exporting", "Exporting dubbed video")
+    getattr(runner, "set_stage", lambda *_: None)("exporting", "Exporting dubbed video")
     final.parent.mkdir(parents=True, exist_ok=True)
     progress("Creating final dubbed MP4…")
     temp = final.with_name(final.stem + ".partial" + final.suffix)

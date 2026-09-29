@@ -20,6 +20,14 @@ def srt(texts):
 
 
 class ReviewTests(unittest.TestCase):
+    def setUp(self):
+        # Pipeline fixtures deliberately contain placeholder MP4 bytes. Decoder
+        # behavior belongs to test_visual_sync, not subtitle review tests.
+        visual = patch("anime_dubber.visual_sync.align_dub_to_visible_speech",
+                       side_effect=lambda _video, segments, *_args, **_kwargs: list(segments))
+        visual.start()
+        self.addCleanup(visual.stop)
+
     def test_review_understands_source_and_target_language(self):
         spanish = {"start": 0.0, "end": 2.0, "text": "Hola amigo"}
         english = {"start": 0.0, "end": 2.0, "text": "Hello friend"}

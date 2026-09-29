@@ -35,11 +35,17 @@ final class AppUpdaterTests: XCTestCase {
             let backend = app.appendingPathComponent("Contents/Resources/backend")
             try fm.createDirectory(at: backend.appendingPathComponent("dubcanvas"), withIntermediateDirectories: true)
             try Data("print('backend smoke test passed')".utf8).write(to: backend.appendingPathComponent("dubcanvas/__main__.py"))
-            for name in ["requirements.txt", "requirements-cross-platform.txt", "requirements-premium-voices.txt"] {
+            // Exercise the updater commands without installing into Xcode's Python.
+            try fm.createDirectory(at: backend.appendingPathComponent("pip"), withIntermediateDirectories: true)
+            try Data("".utf8).write(to: backend.appendingPathComponent("pip/__init__.py"))
+            try Data("print('test dependency check passed')".utf8).write(to: backend.appendingPathComponent("pip/__main__.py"))
+            for name in ["requirements.txt", "requirements-cross-platform.txt", "requirements-premium-voices.txt", "constraints.txt"] {
                 try Data("# unchanged\n".utf8).write(to: backend.appendingPathComponent(name))
             }
         }
         let bin = current.appendingPathComponent("Contents/Resources/backend/.venv/bin")
+        // Older installed bundles did not contain constraints.txt.
+        try fm.removeItem(at: current.appendingPathComponent("Contents/Resources/backend/constraints.txt"))
         try fm.createDirectory(at: bin, withIntermediateDirectories: true)
         try fm.createSymbolicLink(at: bin.appendingPathComponent("python"), withDestinationURL: URL(fileURLWithPath: "/usr/bin/python3"))
         try Data("keep environment".utf8).write(to: bin.appendingPathComponent("marker"))

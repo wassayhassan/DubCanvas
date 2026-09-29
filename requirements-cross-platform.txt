@@ -1,5 +1,6 @@
 # Windows / Linux (and optional non-MLX macOS) provider stack.
 # FFmpeg must also be installed on the system PATH.
+-c constraints.txt
 yt-dlp[default,curl-cffi]
 faster-whisper>=1.1,<2
 demucs>=4.1.0,<5

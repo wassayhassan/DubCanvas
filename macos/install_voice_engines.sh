@@ -21,17 +21,15 @@ PY="$ROOT/.venv/bin/python"
 "$PY" -m pip install --upgrade pip setuptools wheel
 
 echo
-echo "Installing Kokoro…"
-"$PY" -m pip install "kokoro>=0.9.4,<1" soundfile
-
-echo
-echo "Installing Chatterbox Turbo and Multilingual…"
+echo "Installing Kokoro and Chatterbox together with the backend dependencies…"
 echo "Chatterbox pins its compatible PyTorch/torchaudio versions, so this step can take a while."
-if ! "$PY" -m pip install "chatterbox-tts>=0.1.7,<0.2"; then
+if ! "$PY" -m pip install -r requirements.txt -r requirements-premium-voices.txt; then
   echo
-  echo "WARNING: Chatterbox installation failed. Kokoro remains available."
+  echo "WARNING: Full voice-engine installation failed. Trying Kokoro with the backend dependencies."
+  "$PY" -m pip install -c constraints.txt -r requirements.txt "kokoro>=0.9.4,<1" soundfile
   echo "DubCanvas will automatically fall back to Kokoro/macOS voices."
 fi
+"$PY" -m pip check
 
 echo
 echo "Voice provider status:"

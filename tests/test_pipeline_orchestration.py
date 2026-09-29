@@ -15,6 +15,13 @@ from anime_dubber.core import (CommandRunner, Config, PipelineError, Segment, an
 
 
 class PipelineOrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        # These tests fake source media and verify pipeline control flow.
+        visual = patch("anime_dubber.visual_sync.align_dub_to_visible_speech",
+                       side_effect=lambda _video, segments, *_args, **_kwargs: list(segments))
+        visual.start()
+        self.addCleanup(visual.stop)
+
     def test_untranslated_chinese_blocks_dub_before_subtitle_publish_or_tts(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

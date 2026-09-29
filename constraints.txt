@@ -1,0 +1,5 @@
+# Chatterbox 0.1.7 requires NumPy 1.x on the app's Python 3.11 runtime.
+numpy>=1.26,<2; python_version < "3.13"
+numpy>=2,<3; python_version >= "3.13"
+# OpenCV 4.12+ requires NumPy 2 on Python 3.9+, conflicting with Chatterbox.
+opencv-python-headless>=4.10,<4.12
