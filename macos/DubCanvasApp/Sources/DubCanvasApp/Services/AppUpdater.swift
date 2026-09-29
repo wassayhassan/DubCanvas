@@ -26,10 +26,15 @@ struct UpdateFailure: LocalizedError {
 @MainActor
 final class AppUpdater: ObservableObject {
     static let shared = AppUpdater()
+    let diagnostics = DiagnosticStore()
     @Published var busy = false
-    @Published var status = ""
+    @Published var status = "" {
+        didSet { diagnostics.append("\(Date().ISO8601Format()) [update] \(status)\n") }
+    }
     @Published var offeredUpdate: AppUpdateManifest?
-    @Published var error: String?
+    @Published var error: String? {
+        didSet { if let error { diagnostics.append("\(Date().ISO8601Format()) [update] [error] \(error)\n") } }
+    }
 
     func check() async {
         guard !busy else { return }
@@ -86,6 +91,7 @@ final class AppUpdater: ObservableObject {
             let logURL = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DubCanvas/update-\(UUID().uuidString).log")
             try fm.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             fm.createFile(atPath: logURL.path, contents: nil)
+            diagnostics.jobPaths["update"] = logURL.path
             let helper = try await Task.detached {
                 try Self.prepare(archive: archive, work: directory, staged: destination, current: target, manifest: manifest, logURL: logURL)
             }.value

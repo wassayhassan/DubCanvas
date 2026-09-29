@@ -969,6 +969,29 @@ def validate_transcript_content(segments: List[Segment]) -> None:
             )
 
 
+def audio_diagnostic_summary(audio: Path) -> dict:
+    """Sample PCM audio levels without loading a long soundtrack into memory."""
+    try:
+        from array import array
+        with wave.open(str(audio), "rb") as handle:
+            frames, rate = handle.getnframes(), handle.getframerate()
+            summary = {"sample_rate": rate, "channels": handle.getnchannels(),
+                       "sample_width": handle.getsampwidth(), "duration_seconds": round(frames / rate, 3)}
+            if handle.getsampwidth() == 2 and frames:
+                peaks, rms = [], []
+                for i in range(12):
+                    handle.setpos(int(max(0, frames - rate) * i / 11))
+                    samples = array("h", handle.readframes(rate))
+                    if sys.byteorder != "little": samples.byteswap()
+                    if samples:
+                        peaks.append(max(abs(value) for value in samples) / 32768)
+                        rms.append(math.sqrt(sum(value * value for value in samples) / len(samples)) / 32768)
+                summary.update(sampled_peak=max(peaks, default=0), sampled_mean_rms=sum(rms) / max(1, len(rms)))
+            return summary
+    except (OSError, EOFError, wave.Error, ZeroDivisionError) as exc:
+        return {"wave_metadata_unavailable": str(exc)}
+
+
 def transcribe_audio(
     audio: Path,
     config: Config,
@@ -984,7 +1007,7 @@ def transcribe_audio(
     provider = resolve_asr_provider(config.asr_provider)
     runner.diagnostic("Transcription input", audio=str(audio), task=task, requested_language=config.source_language,
                       provider=provider, model=config.faster_whisper_model if provider == "faster_whisper" else config.mlx_whisper_model,
-                      bytes=audio.stat().st_size if audio.is_file() else None)
+                      bytes=audio.stat().st_size if audio.is_file() else None, audio_summary=audio_diagnostic_summary(audio))
     requested_language = config.source_language.lower()
     detection_path = work_dir / "detected_source_language.json"
     if requested_language == "auto" and task == "translate" and detection_path.exists():
@@ -1130,7 +1153,9 @@ def transcribe_audio(
     segs = sanitize_segments(raw_segs)
     runner.diagnostic("Recognition output", detected_language=detected_language, raw_cues=len(raw_segs),
                       usable_cues=len(segs), speech_seconds=round(sum(s.end - s.start for s in segs), 3),
-                      first_cues=[s.to_dict() for s in segs[:5]])
+                      first_cues=[s.to_dict() for s in segs[:5]],
+                      confidence=[{key: row.get(key) for key in ("avg_logprob", "no_speech_prob", "compression_ratio")}
+                                  for row in provider_rows[:5]])
     validate_transcript_content(segs)
 
     if task == "transcribe" and config.source_language == "auto":

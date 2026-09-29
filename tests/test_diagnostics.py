@@ -4,15 +4,32 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import wave
+from array import array
 from pathlib import Path
 from unittest.mock import patch
 
 from anime_dubber.application.diagnostics import DiagnosticLog, DiagnosticStream, capture_model_output
 from anime_dubber.application.service import ApplicationService
-from anime_dubber.core import CommandRunner
+from anime_dubber.core import CommandRunner, audio_diagnostic_summary
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_audio_summary_identifies_silent_and_non_silent_input(self):
+        with tempfile.TemporaryDirectory() as td:
+            for level in (0, 5000):
+                path = Path(td) / f"audio-{level}.wav"
+                with wave.open(str(path), "wb") as audio:
+                    audio.setnchannels(1)
+                    audio.setsampwidth(2)
+                    audio.setframerate(16000)
+                    audio.writeframes(array("h", [level] * 16000).tobytes())
+                summary = audio_diagnostic_summary(path)
+                self.assertEqual(summary["duration_seconds"], 1.0)
+                self.assertEqual(summary["channels"], 1)
+                self.assertEqual(summary["sample_rate"], 16000)
+                self.assertEqual(summary["sampled_mean_rms"] > 0, level > 0)
+
     def test_stage_log_is_persisted_clean_and_redacted(self):
         with tempfile.TemporaryDirectory() as td:
             log = DiagnosticLog(Path(td), "job_test", {"elevenlabs_api_key": "secret-value", "model": "test"})

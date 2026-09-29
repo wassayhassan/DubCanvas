@@ -79,7 +79,8 @@ final class AppState: ObservableObject {
     var diagnosticReport: String {
         let paths = [currentProject?.artifacts["diagnostic_log"]].compactMap { $0 } +
             (currentProject?.dubs.compactMap { $0.artifacts["diagnostic_log"] } ?? [])
-        return redactDiagnostic(diagnosticStore.fullReport(extraPaths: paths))
+        return redactDiagnostic(diagnosticStore.fullReport(extraPaths: paths) +
+            "\n\n=== UPDATE DIAGNOSTICS ===\n" + AppUpdater.shared.diagnostics.fullReport(extraPaths: []))
     }
     func exportDiagnostics() {
         let panel = NSSavePanel()
