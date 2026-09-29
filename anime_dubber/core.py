@@ -26,8 +26,10 @@ WHISPER_MODEL = "mlx-community/whisper-large-v3-mlx"
 LLM_MODEL = "mlx-community/Qwen3-8B-4bit"
 DEMUCS_MODEL = "htdemucs"
 SAMPLE_RATE = 44100
-DIALOGUE_GUARD_PRE = 0.24
-DIALOGUE_GUARD_POST = 0.16
+DIALOGUE_GUARD_PRE = 0.42
+DIALOGUE_GUARD_POST = 0.42
+DIALOGUE_GUARD_GAP = 0.70
+DIALOGUE_CROSSFADE = 0.10
 
 DEFAULT_CONTEXT = "Preserve names, intent, tone, and recurring terminology; use natural concise dialogue."
 
@@ -1919,7 +1921,9 @@ def _merge_dialogue_guard_intervals(
     merged: List[List[float]] = [[intervals[0][0], intervals[0][1]]]
     for start, end in intervals[1:]:
         last = merged[-1]
-        if start <= last[1] + 0.04:
+        # A brief pause between adjacent turns may contain the tail or onset
+        # of a speaker that Whisper did not include in either cue.
+        if start <= last[1] + DIALOGUE_GUARD_GAP:
             last[1] = max(last[1], end)
         else:
             merged.append([start, end])
@@ -1951,6 +1955,7 @@ def build_dialogue_safe_background(
         "intervals": [[round(a, 3), round(b, 3)] for a, b in intervals],
         "chunk_seconds": int(config.chunk_seconds),
         "guard": [DIALOGUE_GUARD_PRE, DIALOGUE_GUARD_POST],
+        "gap_and_crossfade": [DIALOGUE_GUARD_GAP, DIALOGUE_CROSSFADE],
     }, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     out = work_dir / f"background_bed_{signature}.wav"
     if config.resume and _complete_wav(out, minimum_seconds=total_duration * .98) and not config.force:
@@ -1992,7 +1997,9 @@ def build_dialogue_safe_background(
                 break
             if b <= start:
                 continue
-            local.append((max(0.0, a - start), min(dur, b - start)))
+            # Keep the original region boundaries across chunk cuts. Clipping
+            # them here would start a second fade inside continuous dialogue.
+            local.append((a - start, b - start))
 
         if not local:
             _atomic_media_run(runner, [
@@ -2005,13 +2012,18 @@ def build_dialogue_safe_background(
 
         # Chunk-local expressions keep ffmpeg command size manageable even for
         # multi-hour episodes. Original is used outside speech; no_vocals inside.
-        terms = "+".join(f"between(t,{a:.6f},{b:.6f})" for a, b in local)
-        mask = f"gt({terms},0)"
+        # Fade the two beds through each other. A binary volume switch can
+        # click at a speech boundary and expose a syllable on a frame edge.
+        terms = "+".join(
+            f"max(0,min(1,min((t-({a:.6f}))/{DIALOGUE_CROSSFADE:.3f},"
+            f"({b:.6f}-t)/{DIALOGUE_CROSSFADE:.3f})))" for a, b in local
+        )
+        mask = f"min(1,{terms})"
         filt = (
             f"[0:a]atrim=duration={dur:.6f},asetpts=PTS-STARTPTS,"
-            f"volume='if({mask},0,1)':eval=frame[o];"
+            f"volume='1-({mask})':eval=frame[o];"
             f"[1:a]atrim=duration={dur:.6f},asetpts=PTS-STARTPTS,"
-            f"volume='if({mask},1,0)':eval=frame[s];"
+            f"volume='{mask}':eval=frame[s];"
             "[o][s]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
             "alimiter=limit=0.98[bed]"
         )

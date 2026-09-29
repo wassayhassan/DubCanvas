@@ -62,6 +62,22 @@ class CharacterLogicTests(unittest.TestCase):
         self.assertNotEqual(labels[0], labels[2])
         self.assertGreater(cosine(embs[0], embs[1]), 0.95)
 
+    def test_similar_adjacent_embeddings_do_not_merge_clearly_opposed_voices(self):
+        female = AudioFeatures(f0_median=250, voiced_ratio=.8)
+        male = AudioFeatures(f0_median=115, voiced_ratio=.8)
+        labels = _greedy_cluster([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]],
+                                 max_speakers=6, threshold=.91,
+                                 features=[female, male, female])
+        self.assertEqual(labels[0], labels[2])
+        self.assertNotEqual(labels[0], labels[1])
+
+    def test_uncertain_pitch_does_not_force_a_new_character(self):
+        unknown = AudioFeatures(f0_median=0, voiced_ratio=.1)
+        female = AudioFeatures(f0_median=245, voiced_ratio=.8)
+        labels = _greedy_cluster([[1.0, 0.0], [1.0, 0.0]],
+                                 max_speakers=6, threshold=.91, features=[female, unknown])
+        self.assertEqual(labels, [0, 0])
+
     def test_style_detection(self):
         baseline = {"rms": -25.0, "f0": 130.0, "flat": 0.02}
         shout = AudioFeatures(rms_db=-15, f0_median=170, voiced_ratio=.9, flatness=.02)

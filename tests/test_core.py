@@ -110,6 +110,13 @@ class CoreTests(unittest.TestCase):
         self.assertAlmostEqual(out[1][0], 3.8, places=3)
         self.assertAlmostEqual(out[1][1], 4.6, places=3)
 
+    def test_dialogue_guard_keeps_brief_inter_turn_pause_on_reduced_stem(self):
+        segments = [Segment(1.0, 1.2, "female"), Segment(2.7, 2.9, "male")]
+        intervals = _merge_dialogue_guard_intervals(segments, 4.0)
+        self.assertEqual(len(intervals), 1)
+        self.assertLess(intervals[0][0], 1.0)
+        self.assertGreater(intervals[0][1], 2.9)
+
     def test_parse_json_translation(self):
         raw = '```json\n[{"id":0,"text":"Hello"},{"id":1,"text":"World"}]\n```'
         self.assertEqual(parse_translation_response(raw, [0, 1]), {0: "Hello", 1: "World"})
