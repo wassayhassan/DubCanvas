@@ -5,9 +5,8 @@ import tempfile
 import unittest
 import wave
 import json
-import numpy as np
 from array import array
-from math import sqrt
+from math import pi, sin, sqrt
 from unittest.mock import patch
 from pathlib import Path
 
@@ -260,13 +259,13 @@ class FfmpegPipelineTests(unittest.TestCase):
                 4.0, d, Config(source="x", output_dir=d), CommandRunner(), lambda _: None,
             )
             with wave.open(str(bed), "rb") as output:
-                samples = np.frombuffer(output.readframes(output.getnframes()), dtype="<i2")
-                samples = samples.reshape(-1, output.getnchannels())[:, 0].astype(np.float64)
+                samples = array("h")
+                samples.frombytes(output.readframes(output.getnframes()))
+                mono = samples[::output.getnchannels()]
                 rate = output.getframerate()
-            between = samples[int(1.9 * rate):int(2.0 * rate)]
-            t = np.arange(len(between)) / rate
-            original_tone = abs(np.dot(between, np.sin(2 * np.pi * 220 * t)))
-            separated_tone = abs(np.dot(between, np.sin(2 * np.pi * 440 * t)))
+            between = mono[int(1.9 * rate):int(2.0 * rate)]
+            original_tone = abs(sum(v * sin(2 * pi * 220 * i / rate) for i, v in enumerate(between)))
+            separated_tone = abs(sum(v * sin(2 * pi * 440 * i / rate) for i, v in enumerate(between)))
             self.assertGreater(separated_tone, original_tone * 5)
 
     def test_background_chunk_cut_keeps_dialogue_suppressed(self):
@@ -285,12 +284,12 @@ class FfmpegPipelineTests(unittest.TestCase):
             )
             with wave.open(str(bed), "rb") as output:
                 output.setpos(int(29.98 * output.getframerate()))
-                samples = np.frombuffer(output.readframes(int(.04 * output.getframerate())), dtype="<i2")
-                samples = samples.reshape(-1, output.getnchannels())[:, 0].astype(np.float64)
+                samples = array("h")
+                samples.frombytes(output.readframes(int(.04 * output.getframerate())))
+                mono = samples[::output.getnchannels()]
                 rate = output.getframerate()
-            t = np.arange(len(samples)) / rate
-            self.assertGreater(abs(np.dot(samples, np.sin(2 * np.pi * 440 * t))),
-                               abs(np.dot(samples, np.sin(2 * np.pi * 220 * t))) * 5)
+            self.assertGreater(abs(sum(v * sin(2 * pi * 440 * i / rate) for i, v in enumerate(mono))),
+                               abs(sum(v * sin(2 * pi * 220 * i / rate) for i, v in enumerate(mono))) * 5)
 
     def test_ffconcat_quote_handles_apostrophe(self):
         quoted = _ffconcat_quote(Path("/tmp/O'Brien/chunk.wav"))
