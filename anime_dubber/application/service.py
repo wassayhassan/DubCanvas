@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import traceback
+import tempfile
 import uuid
 from urllib.parse import urlparse
 from dataclasses import asdict
@@ -33,6 +35,7 @@ from ..core import (
 from ..languages import TARGET_LANGUAGES
 from .events import AppEvent, progress_to_event
 from .jobs import JobRecord
+from .diagnostics import DiagnosticLog, capture_model_output
 from .project import ProjectStore, get_project as load_project, list_projects as list_project_manifests
 
 
@@ -553,16 +556,53 @@ class ApplicationService:
         runner = record.runner or CommandRunner()
         record.runner = runner
         store = self._project_stores.get(record.id)
+        try:
+            diagnostics = DiagnosticLog((store.root if store else config.output_dir / ".anime_dubber_project") /
+                                        "logs" / "jobs", record.id, _json_safe(asdict(config)))
+        except OSError:
+            try:
+                diagnostics = DiagnosticLog(Path(tempfile.gettempdir()) / "DubCanvas-logs", record.id, _json_safe(asdict(config)))
+                self._emit(AppEvent("warning", {"message": "Project logs could not be written; diagnostics are saved in " + str(diagnostics.path)}, record.id))
+            except OSError as exc:
+                record.status = record.stage = "failed"
+                record.error = "Could not create diagnostic logs: " + str(exc)
+                record.ended_at = datetime.now(timezone.utc).isoformat()
+                record.runner = None
+                if store:
+                    store.finish(status="failed", error=record.error, dub_id=config.version_id)
+                self._emit(AppEvent("error", {"message": record.error, "stage": "preparing"}, record.id))
+                self._emit(AppEvent("finished", {"status": "failed"}, record.id))
+                return
+        def diagnostic(message: str, **details) -> None:
+            payload = diagnostics.write(message, "debug", details)
+            preview = dict(payload)
+            preview["details"] = {key: value[:8000] + "\n[Full output in saved log]" if
+                                  isinstance(value, str) and len(value) > 8000 else value
+                                  for key, value in payload["details"].items()}
+            self._emit(AppEvent("log", preview, record.id))
+        runner.diagnostic = diagnostic
+        def set_stage(stage: str, title: str) -> None:
+            if record.stage == stage:
+                return
+            record.stage = stage
+            diagnostics.change_stage(stage)
+            if store:
+                store.update_stage(stage=stage, title=title)
+            self._emit(AppEvent("stage", {"stage": stage, "title": title}, record.id))
+        runner.set_stage = set_stage
 
         def progress(message: str) -> None:
             if str(message).lower().startswith("warning"):
                 if store:
                     store.add_warning(str(message), dub_id=config.version_id)
-                self._emit(AppEvent("warning", {"message": str(message)}, record.id))
             event = progress_to_event(message, record.id)
             if event.event in {"stage", "progress"}:
                 stage = str(event.data.get("stage") or record.stage)
+                if stage == "preparing" or str(message).lower().startswith("warning"):
+                    stage = record.stage
+                    event.data["stage"] = stage
                 record.stage = stage
+                diagnostics.change_stage(stage)
                 if store:
                     fraction = event.data.get("fraction")
                     should_write = event.event == "stage"
@@ -581,25 +621,31 @@ class ApplicationService:
             self._emit(event)
             if not str(message).startswith("__DOWNLOAD_PROGRESS__|"):
                 if store:
-                    store.append_log(str(message))
-                self._emit(AppEvent("log", {"level": "info", "message": str(message)}, record.id))
+                    store.append_log(diagnostics.redact(str(message)))
+                payload = diagnostics.write(message, "warning" if str(message).lower().startswith("warning") else "info")
+                self._emit(AppEvent("log", payload, record.id))
 
         runner.progress = progress
         def publish(kind: str, path: Path, language: str = "") -> None:
+            diagnostics.write("Artifact saved", details={"kind": kind, "path": str(path), "language": language})
             if store:
                 store.publish_artifact(kind, str(path), dub_id=config.version_id, version_id=config.version_id,
                                        language=language or config.target_language)
-            self._emit(AppEvent("artifact", {"kind": kind, "path": str(path)}, record.id))
+            self._emit(AppEvent("artifact", {"kind": kind, "path": str(path), "stage": diagnostics.stage}, record.id))
         runner.artifact = publish
         runner.source_changed = store.invalidate_shared_source if store else lambda: None
         runner.duration = lambda seconds: store.set_duration(config.version_id, seconds) if store and config.version_id else None
-        self._emit(AppEvent("job_started", {"kind": record.kind}, record.id))
+        self._emit(AppEvent("job_started", {"kind": record.kind, "stage": "preparing",
+                           "log_path": str(diagnostics.path)}, record.id))
+        publish("diagnostic_log", diagnostics.path)
+        publish("diagnostic_jsonl", diagnostics.json_path)
 
         try:
             # The application boundary is cross-platform now, while the legacy v3
             # implementation underneath it is still MLX/macOS-specific. Provider
             # replacement happens without changing the SwiftUI/CLI contracts.
-            results = analyze_only(config, progress, runner) if analysis else run_pipeline(config, progress, runner)
+            with capture_model_output(diagnostics):
+                results = analyze_only(config, progress, runner) if analysis else run_pipeline(config, progress, runner)
             runner.check_cancel()
             record.result = {str(k): str(v) for k, v in results.items()}
             if store:
@@ -625,14 +671,21 @@ class ApplicationService:
                     store.finish(status=record.status, error=record.error, dub_id=config.version_id)
                 self._emit(AppEvent("finished", {"status": record.status}, record.id))
                 return
+            failed_stage = diagnostics.stage
+            payload = diagnostics.write(str(exc), "error", {"error_type": type(exc).__name__,
+                                        "traceback": traceback.format_exc()})
             record.status = "failed"
             record.stage = "failed"
             record.error = str(exc)
             if store:
                 store.finish(status="failed", error=str(exc), dub_id=config.version_id)
-            self._emit(AppEvent("error", {"message": str(exc), "error_type": type(exc).__name__}, record.id))
+            self._emit(AppEvent("error", {"message": payload["message"], "error_type": type(exc).__name__,
+                       "stage": failed_stage, "traceback": payload["details"]["traceback"],
+                       "log_path": str(diagnostics.path)}, record.id))
             self._emit(AppEvent("finished", {"status": "failed"}, record.id))
         finally:
+            diagnostics.write("Job finished", details={"status": record.status, "last_stage": diagnostics.stage,
+                              "result": record.result, "error": record.error})
             record.ended_at = datetime.now(timezone.utc).isoformat()
             record.runner = None
             with self._lock:

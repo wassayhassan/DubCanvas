@@ -260,7 +260,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
             self.assertIn(("source_srt", "es"), published)
             self.assertIn(("translated_srt", "ja"), published)
             self.assertIn("Hola", result["source_srt"].read_text())
-            self.assertIn("こんにちは", result["translated_srt"].read_text())
+            self.assertIn("こんにちは", result["translated_srt"].read_text(encoding="utf-8"))
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe required")
     def test_auto_character_references_reach_chatterbox_in_full_dub(self):

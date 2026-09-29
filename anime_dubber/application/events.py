@@ -26,6 +26,8 @@ class AppEvent:
 
 
 _STAGE_PATTERNS = [
+    ("reviewing", ("Reviewing subtitles", "Loading selective review", "Subtitle review")),
+    ("visual_timing", ("Visual timing", "Visual speech", "mouth motion")),
     ("downloading", ("Downloading source", "Downloading video")),
     ("extracting_audio", ("Extracting soundtrack", "Extracting audio")),
     ("separating_stems", ("Separating", "Demucs", "dialogue/vocal")),

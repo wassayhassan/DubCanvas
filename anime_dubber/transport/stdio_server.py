@@ -8,6 +8,7 @@ from typing import Any, Dict
 from .. import __version__
 from ..application import ApplicationService
 from .protocol import decode_request, encode_message, response_error, response_ok
+from ..application.diagnostics import DiagnosticStream
 
 
 class JsonLineWriter:
@@ -28,6 +29,7 @@ def serve() -> int:
     # Python stdout to stderr so one stray print cannot corrupt the JSONL stream.
     protocol_stdout = sys.stdout
     writer = JsonLineWriter(protocol_stdout)
+    sys.stderr = DiagnosticStream(sys.stderr)
     sys.stdout = sys.stderr
 
     service = ApplicationService(event_sink=lambda event: writer.write(event.to_dict()))

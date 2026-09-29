@@ -196,9 +196,19 @@ struct ActivityEntry: Identifiable {
     }
 
     let id = UUID()
-    let date = Date()
+    let date: Date
     let kind: Kind
     let message: String
+    let stage: String
+    let jobID: String
+    let isDebug: Bool
+
+    init(kind: Kind, message: String, stage: String = "app", jobID: String = "", isDebug: Bool = false, date: Date = Date()) {
+        self.kind = kind; self.message = message; self.stage = stage
+        self.jobID = jobID; self.isDebug = isDebug; self.date = date
+    }
+
+    var formatted: String { "\(date.ISO8601Format()) [\(jobID.isEmpty ? "app" : jobID)] [\(stage)] [\(kind)] \(message)" }
 
     var symbol: String {
         switch kind {

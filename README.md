@@ -27,6 +27,10 @@ zsh macos/install_voice_engines.sh
 
 Chatterbox and Kokoro provide local voices; ElevenLabs is optional and requires an API key in Settings. Non-English dubbing needs a multilingual voice engine such as Chatterbox Multilingual or ElevenLabs. If no suitable voice engine is available, subtitles can still be generated.
 
+Use **Check for Updates** in the top bar to check for a newer build. **Update and Restart** asks for your approval, verifies the download, preserves projects and model caches, and prepares the installed Python environment before replacing the app. Finish or pause all jobs first. Existing installations need one rebuild to get the updater.
+
+For a failed job, open **Activity & Logs** and choose **Copy Stage**, **Copy All Logs**, or **Save Logs**. Every job automatically saves a readable `.log` and structured `.jsonl` under the output folder's `.anime_dubber_project/logs/jobs`. Session and update logs are in `~/Library/Logs/DubCanvas`. The report includes model settings, stage timings, recognition summaries, command output, and exception tracebacks; API keys are redacted.
+
 ## Command line
 
 The Python CLI also runs on macOS, Windows, and Linux. Install FFmpeg and ffprobe first. On Linux, run `bash setup-cross-platform.sh`; on Windows, run `.\setup-cross-platform.ps1` in PowerShell.

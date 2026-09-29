@@ -88,5 +88,8 @@ def faster_whisper_segments(
             "end": float(getattr(seg, "end", 0.0) or 0.0),
             "text": text,
             "words": words,
+            "avg_logprob": getattr(seg, "avg_logprob", None),
+            "no_speech_prob": getattr(seg, "no_speech_prob", None),
+            "compression_ratio": getattr(seg, "compression_ratio", None),
         })
     return rows

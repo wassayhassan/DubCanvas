@@ -698,6 +698,7 @@ def analyze_characters(
     The age/gender-style labels are conservative acoustic categories used only for TTS voice selection.
     They are not assertions about a real person's identity.
     """
+    getattr(runner, "set_stage", lambda *_: None)("analyzing_characters", "Analyzing speakers")
     cache = work_dir / "character_analysis.json"
     signature = {
         "analysis_version": 5,
