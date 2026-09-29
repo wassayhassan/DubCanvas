@@ -11,7 +11,7 @@ from anime_dubber.application.service import config_from_dict
 from anime_dubber.cli import build_parser
 from anime_dubber.core import CommandRunner, Config, transcribe_audio, transcribe_source_audio
 from anime_dubber.providers.asr import resolve_asr_provider
-from anime_dubber.providers.translation import ollama_generate
+from anime_dubber.providers.translation import ollama_generate, translate_with_ollama
 from anime_dubber.providers.tts import (
     _prepare_chatterbox_watermarker,
     automatic_kokoro_voice,
@@ -75,6 +75,34 @@ class CrossPlatformProviderTests(unittest.TestCase):
             with patch("anime_dubber.providers.asr.faster_whisper_segments", side_effect=AssertionError("recached")):
                 cached = transcribe_audio(Path(td) / "voice.wav", resumed, Path(td), CommandRunner(), lambda _: None)
             self.assertEqual((resumed.source_language, cached[0].text), ("es", "Hola"))
+
+    def test_auto_language_does_not_assume_chinese_from_legacy_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "transcript_zh_faster_whisper_v5_precise.json").write_text(
+                json.dumps([{"start": 0, "end": 1, "text": "你好"}]), encoding="utf-8")
+            cfg = Config(source="video.mp4", output_dir=root, source_language="auto",
+                         asr_provider="faster_whisper")
+            def recognize(_audio, **kwargs):
+                self.assertIsNone(kwargs["language"])
+                kwargs["language_sink"]("es")
+                return [{"start": 0, "end": 1, "text": "Hola"}]
+            with patch("anime_dubber.providers.asr.faster_whisper_segments", side_effect=recognize) as asr:
+                rows = transcribe_audio(root / "speech.wav", cfg, root, CommandRunner(), lambda _: None)
+            asr.assert_called_once()
+            self.assertEqual((cfg.source_language, rows[0].text), ("es", "Hola"))
+
+    def test_partial_ollama_batches_keep_valid_lines_across_retries(self):
+        with patch("anime_dubber.providers.translation.ollama_generate",
+                   side_effect=['[{"id": 0, "text": "Hello"}]',
+                                '[{"id": 1, "text": "World"}]']) as generate:
+            translated = translate_with_ollama(
+                batches=[([0, 1], "translate")], base_url="http://localhost:11434", model="test",
+                parse_batch=lambda raw, ids: {int(row["id"]): row["text"] for row in json.loads(raw)},
+                single_prompt=lambda idx: f"single {idx}", cancel_check=lambda: None,
+                progress=lambda _: None)
+        self.assertEqual(translated, {0: "Hello", 1: "World"})
+        self.assertEqual(generate.call_count, 2)
 
     def test_multilingual_voice_sends_target_language_and_reference(self):
         class FakeAudio:

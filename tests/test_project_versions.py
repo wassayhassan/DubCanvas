@@ -8,7 +8,7 @@ from unittest.mock import patch
 from anime_dubber.application.service import ApplicationService
 from anime_dubber.core import (Config, Segment, run_pipeline, translate_with_llm,
                                translate_with_ollama_provider, LLM_MODEL, CommandRunner,
-                               PipelineError, _version_profiles)
+                               CancelledError, PipelineError, _version_profiles)
 from anime_dubber.application.service import config_from_dict
 import hashlib
 import json
@@ -17,11 +17,33 @@ import types
 
 
 class ProjectVersionsTests(unittest.TestCase):
+    def test_partial_llm_batches_keep_valid_lines_across_retries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = Config(source="source.mp4", output_dir=Path(temp), translation="llm")
+            answers = iter(['[{"id": 0, "text": "Hello"}]',
+                            '[{"id": 1, "text": "World"}]'])
+            fake = types.SimpleNamespace(
+                load=lambda _: (object(), types.SimpleNamespace(chat_template=None)),
+                generate=lambda *_args, **_kwargs: next(answers))
+            with patch.dict(sys.modules, {"mlx_lm": fake}):
+                rows = translate_with_llm([Segment(0, 1, "你好"), Segment(1, 2, "世界")],
+                                          cfg, Path(temp), CommandRunner(), lambda _: None)
+            self.assertEqual([row.translated for row in rows], ["Hello", "World"])
+
+    def test_ollama_cancel_remains_a_cancelled_job(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = Config(source="source.mp4", output_dir=Path(temp), translation="ollama")
+            with patch("anime_dubber.providers.translation.translate_with_ollama",
+                       side_effect=CancelledError("paused")):
+                with self.assertRaises(CancelledError):
+                    translate_with_ollama_provider([Segment(0, 1, "你好")], cfg,
+                                                   Path(temp), CommandRunner(), lambda _: None)
+
     def test_untranslated_cache_is_repaired_instead_of_dubbed(self):
         with tempfile.TemporaryDirectory() as temp:
             cfg = Config(source="source.mp4", output_dir=Path(temp), translation="llm")
             signature = hashlib.sha1(json.dumps({
-                "model": LLM_MODEL, "target_language": "en", "context": cfg.context,
+                "quality_revision": 2, "model": LLM_MODEL, "target_language": "en", "context": cfg.context,
                 "glossary": cfg.glossary, "source_text": ["天下武林,门派如林"],
             }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
             cache = Path(temp) / f"translations_llm_{signature}.json"
@@ -47,6 +69,25 @@ class ProjectVersionsTests(unittest.TestCase):
                                                         cfg, Path(temp), CommandRunner(), lambda _: None)
             self.assertEqual(result[0].translated, "The martial world has countless sects.")
             self.assertNotIn("天下武林", next(Path(temp).glob("translations_ollama_*.json")).read_text(encoding="utf-8"))
+
+    def test_old_ollama_translation_cache_is_refreshed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = Config(source="source.mp4", output_dir=Path(temp), translation="ollama")
+            signature = hashlib.sha1(json.dumps({
+                "provider": "ollama", "target_language": "en", "model": cfg.ollama_model,
+                "url": cfg.ollama_url, "context": cfg.context, "glossary": cfg.glossary,
+                "source_text": ["你好"],
+            }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
+            old_cache = Path(temp, f"translations_ollama_{signature}.json")
+            old_cache.write_text('{"0":"Unrelated but fluent English"}', encoding="utf-8")
+            with patch("anime_dubber.providers.translation.translate_with_ollama",
+                       return_value={0: "Hello"}) as model:
+                rows = translate_with_ollama_provider([Segment(0, 1, "你好")], cfg,
+                                                      Path(temp), CommandRunner(), lambda _: None)
+            model.assert_called_once()
+            self.assertEqual(rows[0].translated, "Hello")
+            self.assertEqual(json.loads(old_cache.read_text(encoding="utf-8"))["0"],
+                             "Unrelated but fluent English")
 
     def test_translation_failure_stops_before_dub(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -181,7 +222,7 @@ class ProjectVersionsTests(unittest.TestCase):
                     time.sleep(.01)
                 self.assertEqual(service.get_job(job_id)["status"], "completed")
 
-    def test_old_english_translation_cache_is_reused_without_loading_model(self):
+    def test_old_english_translation_cache_is_refreshed_once(self):
         with tempfile.TemporaryDirectory() as temp:
             config = Config(source="source.mp4", output_dir=Path(temp), translation="llm")
             segments = [Segment(0, 1, "你好")]
@@ -189,11 +230,19 @@ class ProjectVersionsTests(unittest.TestCase):
                 "model": LLM_MODEL, "context": config.context,
                 "glossary": config.glossary, "source_text": ["你好"],
             }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
-            Path(temp, f"translations_llm_{signature}.json").write_text('{"0":"Hello"}')
-            result = translate_with_llm(segments, config, Path(temp), CommandRunner(), lambda _: None)
+            Path(temp, f"translations_llm_{signature}.json").write_text('{"0":"Unrelated but fluent English"}')
+            fake = types.SimpleNamespace(
+                load=lambda _: (object(), types.SimpleNamespace(chat_template=None)),
+                generate=lambda *_args, **_kwargs: '[{"id": 0, "text": "Hello"}]')
+            with patch.dict(sys.modules, {"mlx_lm": fake}):
+                result = translate_with_llm(segments, config, Path(temp), CommandRunner(), lambda _: None)
             self.assertEqual(result[0].translated, "Hello")
-            # Migration writes a new signature but preserves the old artifact.
+            # The old answer is preserved for diagnostics, but a new cache is used.
             self.assertEqual(len(list(Path(temp).glob("translations_llm_*.json"))), 2)
+            with patch.dict(sys.modules, {"mlx_lm": None}):
+                reused = translate_with_llm([Segment(0, 1, "你好")], config, Path(temp),
+                                            CommandRunner(), lambda _: None)
+            self.assertEqual(reused[0].translated, "Hello")
 
     def test_multiple_dubs_preserve_versions_and_deletion_is_isolated(self):
         with tempfile.TemporaryDirectory() as temp:
