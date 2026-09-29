@@ -186,6 +186,8 @@ class CommandRunner:
         self._proc: Optional[subprocess.Popen] = None
         self.cancel_event = threading.Event()
         self.pause_requested = False
+        self.diagnostic: Callable[..., None] = lambda _message, **_details: None
+        self.set_stage: Callable[[str, str], None] = lambda _stage, _title: None
 
     def cancel(self, *, pause: bool = False) -> None:
         self.pause_requested = pause
@@ -216,6 +218,7 @@ class CommandRunner:
         env: Optional[dict] = None,
     ) -> subprocess.CompletedProcess:
         self.check_cancel()
+        self.diagnostic("Command started", command=list(map(str, cmd)), cwd=str(cwd) if cwd else None)
         kwargs = {
             "cwd": str(cwd) if cwd else None,
             "env": env,
@@ -234,6 +237,7 @@ class CommandRunner:
         if self.cancel_event.is_set():
             raise CancelledError("Paused by user" if self.pause_requested else "Cancelled by user")
         cp = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        self.diagnostic("Command finished", returncode=cp.returncode, stdout=stdout or "", stderr=stderr or "")
         if check and cp.returncode != 0:
             tail = (stderr or stdout or "")[-4000:]
             raise PipelineError(f"Command failed ({cp.returncode}): {' '.join(map(str, cmd))}\n{tail}")
@@ -251,6 +255,7 @@ class CommandRunner:
     ) -> subprocess.CompletedProcess:
         """Run a command while streaming combined stdout/stderr line-by-line."""
         self.check_cancel()
+        self.diagnostic("Streaming command started", command=list(map(str, cmd)), cwd=str(cwd) if cwd else None)
         proc = subprocess.Popen(
             list(map(str, cmd)),
             cwd=str(cwd) if cwd else None,
@@ -276,6 +281,7 @@ class CommandRunner:
                     raise CancelledError("Cancelled by user")
                 line = raw.rstrip("\r\n")
                 lines.append(line)
+                self.diagnostic("Command output", output=line)
                 if line_callback:
                     line_callback(line)
             proc.stdout.close()
@@ -286,6 +292,7 @@ class CommandRunner:
                     self._proc = None
 
         stdout = "\n".join(lines)
+        self.diagnostic("Streaming command finished", returncode=code)
         if check and code != 0:
             tail = stdout[-4000:]
             raise PipelineError(f"Command failed ({code}): {' '.join(map(str, cmd))}\n{tail}")
@@ -672,6 +679,7 @@ def translate_with_llm(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> List[Segment]:
+    runner.set_stage("translating", "Translating subtitles")
     target = target_name(config.target_language)
     source = source_name(config.source_language)
     signature_inputs = {
@@ -796,6 +804,7 @@ def translate_with_ollama_provider(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> List[Segment]:
+    runner.set_stage("translating", "Translating subtitles")
     target = target_name(config.target_language)
     source = source_name(config.source_language)
     from .providers.translation import translate_with_ollama
@@ -971,7 +980,11 @@ def transcribe_audio(
 ) -> List[Segment]:
     from .providers.asr import resolve_asr_provider
 
+    runner.set_stage("transcribing" if task == "transcribe" else "translating", "Recognizing speech" if task == "transcribe" else "Translating speech")
     provider = resolve_asr_provider(config.asr_provider)
+    runner.diagnostic("Transcription input", audio=str(audio), task=task, requested_language=config.source_language,
+                      provider=provider, model=config.faster_whisper_model if provider == "faster_whisper" else config.mlx_whisper_model,
+                      bytes=audio.stat().st_size if audio.is_file() else None)
     requested_language = config.source_language.lower()
     detection_path = work_dir / "detected_source_language.json"
     if requested_language == "auto" and task == "translate" and detection_path.exists():
@@ -1031,6 +1044,7 @@ def transcribe_audio(
             if not cleaned:
                 raise ValueError("No usable transcript segments")
             validate_transcript_content(cleaned)
+            runner.diagnostic("Transcript cache reused", cache=str(cache_to_read), cues=len(cleaned))
             if len(cleaned) != len(raw_cached) or any(
                 abs(a.start - b.start) > 1e-6 or abs(a.end - b.end) > 1e-6 or a.text != b.text
                 for a, b in zip(cleaned, raw_cached)
@@ -1114,6 +1128,9 @@ def transcribe_audio(
         precise_start, precise_end = _precise_row_bounds(x)
         raw_segs.append(Segment(precise_start, precise_end, text))
     segs = sanitize_segments(raw_segs)
+    runner.diagnostic("Recognition output", detected_language=detected_language, raw_cues=len(raw_segs),
+                      usable_cues=len(segs), speech_seconds=round(sum(s.end - s.start for s in segs), 3),
+                      first_cues=[s.to_dict() for s in segs[:5]])
     validate_transcript_content(segs)
 
     if task == "transcribe" and config.source_language == "auto":
@@ -1159,6 +1176,7 @@ def _locate_downloaded_source(work_dir: Path, stdout: str = "") -> Optional[Path
 
 
 def download_source(source: str, work_dir: Path, runner: CommandRunner, progress: ProgressCallback) -> Path:
+    runner.set_stage("downloading" if is_url(source) else "validating_source", "Checking source video")
     if not is_url(source):
         p = Path(source).expanduser().resolve()
         if not p.exists():
@@ -1279,6 +1297,7 @@ def download_source(source: str, work_dir: Path, runner: CommandRunner, progress
 
 
 def extract_audio(video: Path, work_dir: Path, runner: CommandRunner, progress: ProgressCallback, config: Config) -> Path:
+    runner.set_stage("extracting_audio", "Extracting source audio")
     validate_media_streams(video, runner)
     audio = work_dir / "original.wav"
     if config.resume and _complete_wav(audio) and not config.force:
@@ -1306,6 +1325,7 @@ def separate_dialogue(
     progress: ProgressCallback,
     config: Config,
 ) -> Tuple[Path, Path]:
+    runner.set_stage("separating_stems", "Separating dialogue and background")
     stems_dir = work_dir / "stems"
     vocals = _find_stem(stems_dir, "vocals.wav")
     bg = _find_stem(stems_dir, "no_vocals.wav")
@@ -1504,6 +1524,7 @@ def prepare_tts_clip(
     next_start: Optional[float] = None,
     max_tempo: float = 1.0,
 ) -> Path:
+    runner.set_stage("synthesizing", "Generating dub voices")
     text = (seg.translated or seg.text).strip()
     if not text:
         raise PipelineError(f"Empty translated text for segment {index}")
@@ -1650,6 +1671,9 @@ def prepare_tts_clip(
     else:
         valid_source = False
 
+    runner.diagnostic("Voice synthesis", line=index + 1, speaker=seg.speaker_id, provider=resolved_tts,
+                      reference=chatterbox_reference, american_english=american_english,
+                      text=text, window=[seg.start, seg.end], next_start=next_start, reused=valid_source)
     if valid_source:
         progress(f"Reusing generated voice for line {index + 1}")
     elif resolved_tts == "chatterbox":
@@ -1837,6 +1861,7 @@ def render_dub_timeline(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> Path:
+    runner.set_stage("mixing", "Rendering the dub timeline")
     timeline_signature = hashlib.sha1(json.dumps({
         "segments": [[round(s.start, 3), round(s.end, 3), str(p), p.stat().st_size,
                       p.stat().st_mtime_ns] for s, p in zip(segments, clips)],
@@ -2083,6 +2108,7 @@ def mix_background_and_dub(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> Path:
+    runner.set_stage("mixing", "Mixing background and dub")
     mix_signature = hashlib.sha1(json.dumps({
         "background": [background.name, background.stat().st_size],
         "dub": [str(dub), dub.stat().st_size],
@@ -2145,6 +2171,7 @@ def _mix_to_temp(background, dub, temp, out, bg_duration, config, runner, progre
 
 def mux_video(video: Path, audio: Path, final: Path, runner: CommandRunner,
               progress: ProgressCallback, extend_by: float = 0.0) -> None:
+    runner.set_stage("exporting", "Exporting dubbed video")
     final.parent.mkdir(parents=True, exist_ok=True)
     progress("Creating final dubbed MP4…")
     temp = final.with_name(final.stem + ".partial" + final.suffix)
@@ -2510,6 +2537,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     # Stronger model suggestions can be added to this report later with the CLI
     # without rerunning transcription, translation, or TTS.
     from .review import review_subtitles
+    getattr(runner, "set_stage", lambda *_: None)("reviewing", "Reviewing subtitles")
     review_path = en_srt.with_suffix(".review.json")
     timing_path = en_srt.with_suffix(".timing.json")
     approval_path = version_dir / f"{key}_{config.target_language}.review-approval.json"
@@ -2820,6 +2848,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     if duration_callback:
         duration_callback(total_duration)
     from .visual_sync import align_dub_to_visible_speech
+    getattr(runner, "set_stage", lambda *_: None)("visual_timing", "Matching visible speech timing")
     timeline_segments = align_dub_to_visible_speech(
         video, segments, clips, work, runner, progress, total_duration=total_duration,
         resume=config.resume, force=config.force,

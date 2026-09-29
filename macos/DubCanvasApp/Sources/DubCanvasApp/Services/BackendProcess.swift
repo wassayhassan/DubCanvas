@@ -144,6 +144,9 @@ final class BackendProcess {
             guard !lineData.isEmpty,
                   let object = try? JSONSerialization.jsonObject(with: Data(lineData)),
                   let dictionary = object as? [String: Any] else {
+                if let text = String(data: lineData, encoding: .utf8), !text.isEmpty {
+                    onDiagnostic?(text + "\n")
+                }
                 continue
             }
             onMessage?(dictionary)

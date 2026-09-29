@@ -1,4 +1,7 @@
 name: macOS app bundle
+permissions:
+  contents: read
+  actions: read
 
 on:
   pull_request:
@@ -8,6 +11,9 @@ on:
 jobs:
   package:
     runs-on: macos-latest
+    permissions:
+      contents: write
+      actions: read
 
     steps:
       - uses: actions/checkout@v4
@@ -18,8 +24,8 @@ jobs:
           target="$(zsh macos/package_app.sh --install-to "$RUNNER_TEMP/DubCanvas Test.app" --print-install-target | tail -1)"
           test "$target" = "$RUNNER_TEMP/DubCanvas Test.app"
 
-      - name: Build unsigned lightweight app bundle
-        run: zsh macos/package_app.sh --no-embed-venv --no-sign
+      - name: Build signed universal update bundle
+        run: zsh macos/package_app.sh --no-embed-venv --universal
 
       - name: Validate bundle
         run: |
@@ -30,8 +36,20 @@ jobs:
           test -f dist/DubCanvas.app/Contents/Resources/backend/dubcanvas/__main__.py
           plutil -lint dist/DubCanvas.app/Contents/Info.plist
           test "$(plutil -extract CFBundleDisplayName raw dist/DubCanvas.app/Contents/Info.plist)" = "DubCanvas"
+          test "$(plutil -extract DubCanvasSourceRevision raw dist/DubCanvas.app/Contents/Info.plist)" = "$GITHUB_SHA"
+          lipo -verify_arch arm64 x86_64 dist/DubCanvas.app/Contents/MacOS/DubCanvas
+          codesign --verify --deep --strict dist/DubCanvas.app
+
+      - name: Test update verification and staging
+        run: swift test --package-path macos/DubCanvasApp
 
       - uses: actions/upload-artifact@v4
         with:
           name: DubCanvas-macOS-lightweight
           path: dist/DubCanvas.app
+
+      - name: Publish automatic update after other checks pass
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 macos/publish_update.py

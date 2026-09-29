@@ -17,6 +17,7 @@ INSTALL_TO=""
 PRINT_TARGET=0
 OPEN_APP=0
 SIGN=1
+UNIVERSAL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +35,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --open) OPEN_APP=1 ;;
     --no-sign) SIGN=0 ;;
+    --universal) UNIVERSAL=1 ;;
     --help)
       cat <<'EOF'
 Usage: ./macos/package_app.sh [options]
@@ -46,6 +48,7 @@ Options:
   --print-install-target  Show the selected destination without building.
   --open           Open the app after packaging/installing.
   --no-sign        Skip local ad-hoc code signing.
+  --universal      Build for both Apple silicon and Intel Macs.
 EOF
       exit 0
       ;;
@@ -90,9 +93,21 @@ VERSION="$("$ROOT/.venv/bin/python" -c 'import anime_dubber; print(anime_dubber.
 SHORT_VERSION="${VERSION%%a*}"
 
 echo "Building SwiftUI app (release)…"
-swift build -c release --package-path "$PKG"
-BIN_DIR="$(swift build -c release --package-path "$PKG" --show-bin-path)"
-BIN="$BIN_DIR/DubCanvasApp"
+if [[ "$UNIVERSAL" -eq 1 ]]; then
+  swift build -c release --arch arm64 --package-path "$PKG"
+  swift build -c release --arch x86_64 --package-path "$PKG"
+  ARM_BIN="$(swift build -c release --arch arm64 --package-path "$PKG" --show-bin-path)/DubCanvasApp"
+  INTEL_BIN="$(swift build -c release --arch x86_64 --package-path "$PKG" --show-bin-path)/DubCanvasApp"
+  mkdir -p "$DIST"
+  BIN="$DIST/DubCanvas-universal"
+  lipo -create "$ARM_BIN" "$INTEL_BIN" -output "$BIN"
+else
+  swift build -c release --package-path "$PKG"
+  BIN_DIR="$(swift build -c release --package-path "$PKG" --show-bin-path)"
+  BIN="$BIN_DIR/DubCanvasApp"
+fi
+SOURCE_REVISION="${DUBCANVAS_SOURCE_REVISION:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo development)}"
+SOURCE_TIMESTAMP="${DUBCANVAS_SOURCE_TIMESTAMP:-$(git -C "$ROOT" show -s --format=%ct HEAD 2>/dev/null || echo 0)}"
 if [[ ! -x "$BIN" ]]; then
   echo "ERROR: Swift build completed but executable was not found at $BIN"
   exit 1
@@ -121,6 +136,7 @@ cp "$ROOT/requirements.txt" "$BACKEND/requirements.txt"
 cp "$ROOT/requirements-cross-platform.txt" "$BACKEND/requirements-cross-platform.txt"
 cp "$ROOT/requirements-premium-voices.txt" "$BACKEND/requirements-premium-voices.txt"
 cp "$ROOT/verify_source.py" "$BACKEND/verify_source.py"
+cp "$ROOT/macos/install_update.sh" "$RESOURCES/install_update.sh"
 find "$BACKEND" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 find "$BACKEND" -name '*.pyc' -delete 2>/dev/null || true
 
@@ -151,7 +167,11 @@ cat > "$CONTENTS/Info.plist" <<EOF
   <key>CFBundleShortVersionString</key>
   <string>$SHORT_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>405</string>
+  <string>$SOURCE_TIMESTAMP</string>
+  <key>DubCanvasSourceRevision</key>
+  <string>$SOURCE_REVISION</string>
+  <key>DubCanvasSourceTimestamp</key>
+  <string>$SOURCE_TIMESTAMP</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>

@@ -5,6 +5,12 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class AppState: ObservableObject {
+    private final class WeakState { weak var value: AppState?; init(_ value: AppState) { self.value = value } }
+    private static var instances: [WeakState] = []
+    static var hasRunningJobs: Bool {
+        instances.contains { $0.value.map { $0.activeJobID != nil || $0.startPending || $0.jobStartPending } ?? false }
+    }
+    static func shutdownAllForUpdate() { for instance in instances { instance.value?.backend.stop() } }
     @Published var selection: SidebarDestination? = .projects
 
     @Published var source = ""
@@ -62,7 +68,34 @@ final class AppState: ObservableObject {
 
     @Published var backendState: BackendConnectionState = .connecting
     @Published var backendDiagnostics = ""
-    @Published var activity: [ActivityEntry] = []
+    @Published var activity: [ActivityEntry] = [] {
+        didSet {
+            if let entry = activity.last, entry.jobID.isEmpty, entry.id != oldValue.last?.id {
+                diagnosticStore.append(entry.formatted + "\n")
+            }
+        }
+    }
+    let diagnosticStore = DiagnosticStore()
+    var diagnosticReport: String {
+        let paths = [currentProject?.artifacts["diagnostic_log"]].compactMap { $0 } +
+            (currentProject?.dubs.compactMap { $0.artifacts["diagnostic_log"] } ?? [])
+        return redactDiagnostic(diagnosticStore.fullReport(extraPaths: paths))
+    }
+    func exportDiagnostics() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "DubCanvas-diagnostics.log"
+        if panel.runModal() == .OK, let url = panel.url {
+            do { try diagnosticReport.write(to: url, atomically: true, encoding: .utf8) }
+            catch { activity.append(ActivityEntry(kind: .error, message: "Could not save diagnostics: \(error.localizedDescription)")) }
+        }
+    }
+    private func redactDiagnostic(_ text: String) -> String {
+        var clean = text.replacingOccurrences(of: "\u{001B}\\[[0-?]*[ -/]*[@-~]", with: "", options: .regularExpression)
+        if !elevenLabsAPIKey.isEmpty { clean = clean.replacingOccurrences(of: elevenLabsAPIKey, with: "<redacted>") }
+        clean = clean.replacingOccurrences(of: "(?i)([?&](?:token|key|api_key|auth|signature|sig)=)[^&\\s]+", with: "$1<redacted>", options: .regularExpression)
+        return clean.replacingOccurrences(of: "(?i)(Bearer\\s+)[A-Za-z0-9._-]+", with: "$1<redacted>", options: .regularExpression)
+    }
     @Published var activityExpanded = false
     @Published var statusText = "Connecting to backend…"
     @Published var progressFraction: Double?
@@ -110,6 +143,8 @@ final class AppState: ObservableObject {
     private let backend = BackendProcess()
 
     init() {
+        Self.instances.removeAll { $0.value == nil }
+        Self.instances.append(WeakState(self))
         loadPreferences()
         elevenLabsAPIKey = KeychainStore.string(for: "elevenlabs-api-key") ?? ""
         connectBackend()
@@ -273,7 +308,11 @@ final class AppState: ObservableObject {
                 },
                 onDiagnostic: { [weak self] text in
                     Task { @MainActor in
-                        self?.backendDiagnostics += text
+                        guard let self else { return }
+                        let clean = self.redactDiagnostic(text)
+                        self.backendDiagnostics += clean
+                        if self.backendDiagnostics.count > 200_000 { self.backendDiagnostics = String(self.backendDiagnostics.suffix(200_000)) }
+                        self.diagnosticStore.append("\(Date().ISO8601Format()) [backend output] \(clean)")
                     }
                 },
                 onTermination: { [weak self] code in
@@ -1191,9 +1230,19 @@ final class AppState: ObservableObject {
     private func handleEvent(_ payload: [String: Any]) {
         let event = payload["event"] as? String ?? ""
         let data = payload["data"] as? [String: Any] ?? [:]
+        let jobID = payload["job_id"] as? String ?? ""
+        let logStage = data["stage"] as? String ?? currentStage
+        if let path = data["log_path"] as? String { diagnosticStore.jobPaths[jobID] = path }
+        func appendLog(_ kind: ActivityEntry.Kind, _ message: String, debug: Bool = false) {
+            let entry = ActivityEntry(kind: kind, message: redactDiagnostic(message), stage: logStage, jobID: jobID, isDebug: debug)
+            activity.append(entry)
+            diagnosticStore.append(entry.formatted + "\n")
+            if activity.count > 5000 { activity.removeFirst(activity.count - 5000) }
+        }
 
         switch event {
         case "job_started":
+            appendLog(.info, "Job started")
             analyzingCurrentJob = data["kind"] as? String == "analyze"
             if let jobID = payload["job_id"] as? String, jobStartPending {
                 activeJobID = jobID
@@ -1219,27 +1268,34 @@ final class AppState: ObservableObject {
 
         case "log":
             if let message = data["message"] as? String, !message.isEmpty {
-                activity.append(ActivityEntry(kind: .info, message: message))
+                let details = data["details"] as? [String: Any] ?? [:]
+                let detailText = (try? JSONSerialization.data(withJSONObject: details, options: [.prettyPrinted, .sortedKeys]))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                appendLog(data["level"] as? String == "warning" ? .warning : .info,
+                          message + (details.isEmpty ? "" : "\n" + detailText), debug: data["level"] as? String == "debug")
             }
 
         case "warning":
-            activity.append(ActivityEntry(kind: .warning, message: data["message"] as? String ?? "Warning"))
+            appendLog(.warning, data["message"] as? String ?? "Warning")
 
         case "artifact":
             let kind = data["kind"] as? String ?? "output"
             let path = data["path"] as? String ?? ""
-            activity.append(ActivityEntry(kind: .artifact, message: "\(kind): \(path)"))
+            if kind == "diagnostic_log" { diagnosticStore.jobPaths[jobID] = path }
+            appendLog(.artifact, "\(kind): \(path)")
             refreshProjects()
 
         case "error":
             let raw = data["message"] as? String ?? "Backend error"
             jobIssueDetail = raw
             jobIssue = raw.contains("403") ? "The video site refused the download. Try the normal video page link, or choose a local file." : raw.contains("ffprobe") || raw.contains("ffmpeg") ? "Video tools are missing. Open System Check for setup details." : raw
-            activity.append(ActivityEntry(kind: .error, message: raw))
+            appendLog(.error, raw)
+            if let traceback = data["traceback"] as? String { appendLog(.info, traceback, debug: true) }
             statusText = "Failed"
 
         case "finished":
             let status = data["status"] as? String ?? "completed"
+            appendLog(.info, "Job \(status)")
             if jobStartPending, let jobID = payload["job_id"] as? String {
                 finishedBeforeStartResponse.insert(jobID)
             }

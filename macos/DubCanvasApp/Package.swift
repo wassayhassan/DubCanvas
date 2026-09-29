@@ -16,6 +16,7 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("Security")
             ]
-        )
+        ),
+        .testTarget(name: "DubCanvasAppTests", dependencies: ["DubCanvasApp"])
     ]
 )
