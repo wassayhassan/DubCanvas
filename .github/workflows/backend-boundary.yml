@@ -32,7 +32,7 @@ jobs:
         run: python verify_source.py
 
       - name: Test application service boundary
-        run: python -m unittest tests.test_application_service tests.test_transport_protocol tests.test_cli tests.test_project_store tests.test_project_versions tests.test_cross_platform_providers tests.test_core tests.test_ffmpeg_pipeline tests.test_review -v
+        run: python -m unittest tests.test_application_service tests.test_transport_protocol tests.test_cli tests.test_project_store tests.test_project_versions tests.test_cross_platform_providers tests.test_core tests.test_ffmpeg_pipeline tests.test_review tests.test_visual_sync -v
 
       - name: CLI help smoke test
         run: python -m dubcanvas --help
