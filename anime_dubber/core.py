@@ -669,6 +669,7 @@ def translate_with_llm(
     target = target_name(config.target_language)
     source = source_name(config.source_language)
     signature_inputs = {
+        "quality_revision": 2,
         "model": config.llm_model,
         "target_language": config.target_language,
         "context": config.context,
@@ -682,35 +683,18 @@ def translate_with_llm(
     ).encode("utf-8")).hexdigest()[:12]
     cache_path = work_dir / f"translations_llm_{translation_signature}.json"
     cache: Dict[str, str] = {}
-    legacy_path = None
-    if config.target_language == "en" and config.source_language == "zh":
-        old_inputs = dict(signature_inputs)
-        old_inputs.pop("target_language", None)
-        old_signature = hashlib.sha1(json.dumps(
-            old_inputs, ensure_ascii=False, sort_keys=True
-        ).encode("utf-8")).hexdigest()[:12]
-        legacy_path = work_dir / f"translations_llm_{old_signature}.json"
     if config.resume and not config.force:
-        legacy_count = 0
-        for candidate in (legacy_path, cache_path):
-            if not candidate or not candidate.exists():
-                continue
+        if cache_path.exists():
             try:
-                loaded = json.loads(candidate.read_text(encoding="utf-8"))
+                loaded = json.loads(cache_path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
-                    valid = {str(i): value for i, value in loaded.items()
+                    cache = {str(i): value for i, value in loaded.items()
                              if str(i).isdigit() and int(i) < len(segments)
                              and isinstance(value, str)
                              and translation_is_usable(segments[int(i)].text, value,
                                                        config.source_language, config.target_language)}
-                    cache.update(valid)
-                    if candidate == legacy_path:
-                        legacy_count = len(valid)
             except (ValueError, OSError):
-                continue
-        if legacy_count:
-            _atomic_json_write(cache_path, cache)
-            progress(f"Reused {legacy_count} lines from the earlier English translation cache")
+                pass
 
     pending = [i for i, s in enumerate(segments) if str(i) not in cache]
     if not pending:
@@ -762,12 +746,15 @@ def translate_with_llm(
         parsed: Dict[int, str] = {}
         for attempt in range(3):
             text = generate_text(prompt)
-            parsed = {i: value for i, value in parse_translation_response(text, ids).items()
-                      if translation_is_usable(segments[i].text, value,
-                                               config.source_language, config.target_language)}
+            for i, value in parse_translation_response(text, ids).items():
+                if i not in parsed and translation_is_usable(segments[i].text, value,
+                                                             config.source_language, config.target_language):
+                    parsed[i] = value
             if len(parsed) == len(ids):
                 break
-            prompt += "\nYour previous response was malformed. Return the exact requested JSON array and nothing else."
+            missing_ids = [i for i in ids if i not in parsed]
+            prompt += ("\nYour previous response missed or mistranslated these IDs: "
+                       f"{missing_ids}. Return the exact requested JSON array; do not copy the source.")
 
         missing = [i for i in ids if i not in parsed]
         for i in missing:
@@ -808,6 +795,7 @@ def translate_with_ollama_provider(
     from .providers.translation import translate_with_ollama
 
     signature_inputs = {
+        "quality_revision": 2,
         "provider": "ollama",
         "target_language": config.target_language,
         "model": config.ollama_model,
@@ -889,6 +877,8 @@ def translate_with_ollama_provider(
             progress=progress,
             on_batch=save_batch,
         )
+    except CancelledError:
+        raise
     except Exception as e:
         raise PipelineError(str(e)) from e
 
@@ -993,15 +983,8 @@ def transcribe_audio(
                 cache_to_read = known_cache
         except (OSError, ValueError, KeyError, TypeError):
             pass
-    if (task == "transcribe" and config.source_language == "auto" and config.resume
-            and not config.force and not cache.exists() and not detection_path.exists()):
-        # Projects created before language detection used a Mandarin-specific cache.
-        old_chinese = work_dir / f"transcript_zh_{provider}_v5_precise.json"
-        if old_chinese.exists():
-            cache_to_read = old_chinese
-            config.source_language = "zh"
-            _atomic_json_write(detection_path, {"language": "zh"})
-            progress("Reusing the existing Chinese transcript for this project")
+    # A legacy Mandarin cache without a matching detection record cannot prove
+    # the language of an automatic-language job. Re-detect it from speech.
     if (
         config.resume
         and not config.force

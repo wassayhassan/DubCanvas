@@ -65,12 +65,12 @@ def translate_with_ollama(
         retry_prompt = prompt
         for _attempt in range(3):
             raw = ollama_generate(base_url=base_url, model=model, prompt=retry_prompt)
-            parsed = parse_batch(raw, ids)
+            parsed.update(parse_batch(raw, ids))
             if len(parsed) == len(ids):
                 break
             retry_prompt += (
-                "\nYour previous response was malformed. Return exactly the requested JSON array "
-                "with the same ids and no commentary."
+                f"\nYour previous response missed these ids: {[idx for idx in ids if idx not in parsed]}. "
+                "Return exactly the requested JSON array with the same ids and no commentary."
             )
 
         for idx in ids:
