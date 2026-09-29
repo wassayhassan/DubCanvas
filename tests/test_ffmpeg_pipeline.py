@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import wave
 import json
+import numpy as np
 from array import array
 from math import sqrt
 from unittest.mock import patch
@@ -242,6 +243,54 @@ class FfmpegPipelineTests(unittest.TestCase):
             )
             self.assertTrue(bed.exists())
             self.assertGreaterEqual(ffprobe_duration(bed, runner), 2.99)
+
+    def test_short_gap_between_voices_does_not_restore_original_speech(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            original, separated = d / "original.wav", d / "no_vocals.wav"
+            for path, freq in ((original, 220), (separated, 440)):
+                subprocess.run([
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", f"sine=frequency={freq}:duration=4",
+                    "-ac", "2", "-ar", "44100", str(path),
+                ], check=True)
+            bed = build_dialogue_safe_background(
+                original, separated,
+                [Segment(1.0, 1.2, "female"), Segment(2.7, 2.9, "male")],
+                4.0, d, Config(source="x", output_dir=d), CommandRunner(), lambda _: None,
+            )
+            with wave.open(str(bed), "rb") as output:
+                samples = np.frombuffer(output.readframes(output.getnframes()), dtype="<i2")
+                samples = samples.reshape(-1, output.getnchannels())[:, 0].astype(np.float64)
+                rate = output.getframerate()
+            between = samples[int(1.9 * rate):int(2.0 * rate)]
+            t = np.arange(len(between)) / rate
+            original_tone = abs(np.dot(between, np.sin(2 * np.pi * 220 * t)))
+            separated_tone = abs(np.dot(between, np.sin(2 * np.pi * 440 * t)))
+            self.assertGreater(separated_tone, original_tone * 5)
+
+    def test_background_chunk_cut_keeps_dialogue_suppressed(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            original, separated = d / "original.wav", d / "no_vocals.wav"
+            for path, freq in ((original, 220), (separated, 440)):
+                subprocess.run([
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", f"sine=frequency={freq}:duration=31",
+                    "-ac", "2", "-ar", "44100", str(path),
+                ], check=True)
+            bed = build_dialogue_safe_background(
+                original, separated, [Segment(29.6, 30.4, "speech")], 31.0, d,
+                Config(source="x", output_dir=d, chunk_seconds=30), CommandRunner(), lambda _: None,
+            )
+            with wave.open(str(bed), "rb") as output:
+                output.setpos(int(29.98 * output.getframerate()))
+                samples = np.frombuffer(output.readframes(int(.04 * output.getframerate())), dtype="<i2")
+                samples = samples.reshape(-1, output.getnchannels())[:, 0].astype(np.float64)
+                rate = output.getframerate()
+            t = np.arange(len(samples)) / rate
+            self.assertGreater(abs(np.dot(samples, np.sin(2 * np.pi * 440 * t))),
+                               abs(np.dot(samples, np.sin(2 * np.pi * 220 * t))) * 5)
 
     def test_ffconcat_quote_handles_apostrophe(self):
         quoted = _ffconcat_quote(Path("/tmp/O'Brien/chunk.wav"))

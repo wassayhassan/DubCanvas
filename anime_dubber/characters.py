@@ -302,22 +302,47 @@ class SpeakerEmbedder:
         return self.embed_many([x], [acoustic])[0]
 
 
-def _greedy_cluster(embeddings: Sequence[Sequence[float]], max_speakers: int, threshold: float) -> List[int]:
+def _confident_voice_class(feature: AudioFeatures) -> str:
+    """Use pitch only when voiced evidence clearly separates low and high turns."""
+    if feature.voiced_ratio < 0.35:
+        return ""
+    if 65 <= feature.f0_median <= 155:
+        return "male"
+    if feature.f0_median >= 215:
+        return "female"
+    return ""
+
+
+def _greedy_cluster(embeddings: Sequence[Sequence[float]], max_speakers: int, threshold: float,
+                    features: Optional[Sequence[AudioFeatures]] = None) -> List[int]:
     centroids: List[np.ndarray] = []
     counts: List[int] = []
     labels: List[int] = []
-    for e in embeddings:
+    classes: List[str] = []
+    for index, e in enumerate(embeddings):
         v = _normalize(np.asarray(e, dtype=np.float32))
+        voice_class = (_confident_voice_class(features[index])
+                       if features is not None and index < len(features) else "")
         if not centroids:
-            centroids.append(v); counts.append(1); labels.append(0); continue
+            centroids.append(v); counts.append(1); labels.append(0); classes.append(voice_class); continue
         sims = [float(np.dot(v, c)) for c in centroids]
-        best = int(np.argmax(sims))
-        if sims[best] >= threshold or len(centroids) >= max_speakers:
+        compatible = [i for i, existing in enumerate(classes)
+                      if not voice_class or not existing or voice_class == existing]
+        best = max(compatible, key=lambda i: sims[i]) if compatible else None
+        if best is not None and (sims[best] >= threshold or len(centroids) >= max_speakers):
             labels.append(best)
             counts[best] += 1
             centroids[best] = _normalize(centroids[best] * (counts[best] - 1) + v)
+            if not classes[best]:
+                classes[best] = voice_class
+        elif len(centroids) < max_speakers:
+            labels.append(len(centroids)); centroids.append(v); counts.append(1); classes.append(voice_class)
         else:
-            labels.append(len(centroids)); centroids.append(v); counts.append(1)
+            # At the configured speaker cap, keep the nearest identity rather
+            # than silently creating more characters than the user requested.
+            best = int(np.argmax(sims))
+            labels.append(best); counts[best] += 1
+            centroids[best] = _normalize(centroids[best] * (counts[best] - 1) + v)
     # Merge obvious duplicate clusters.
     changed = True
     while changed and len(centroids) > 1:
@@ -325,6 +350,8 @@ def _greedy_cluster(embeddings: Sequence[Sequence[float]], max_speakers: int, th
         best_pair = None; best_sim = threshold + 0.06
         for i in range(len(centroids)):
             for j in range(i + 1, len(centroids)):
+                if classes[i] and classes[j] and classes[i] != classes[j]:
+                    continue
                 sim = float(np.dot(centroids[i], centroids[j]))
                 if sim > best_sim:
                     best_sim = sim; best_pair = (i, j)
@@ -338,7 +365,8 @@ def _greedy_cluster(embeddings: Sequence[Sequence[float]], max_speakers: int, th
             na, nb = counts[a], counts[b]
             centroids[a] = _normalize(centroids[a] * na + centroids[b] * nb)
             counts[a] += counts[b]
-            del centroids[b]; del counts[b]
+            classes[a] = classes[a] or classes[b]
+            del centroids[b]; del counts[b]; del classes[b]
             changed = True
     return labels
 
@@ -499,6 +527,10 @@ def _match_series_profiles(profiles: List[CharacterProfile], db_path: Optional[P
         for o in old:
             if o.id in used_old or o.embedding_backend != backend:
                 continue
+            if (p.voice_confidence >= .7 and o.voice_confidence >= .7
+                    and p.voice_class in {"male", "female"} and o.voice_class in {"male", "female"}
+                    and p.voice_class != o.voice_class):
+                continue
             sim = cosine(p.embedding, o.embedding)
             if sim > best_sim:
                 best_sim = sim; best = o
@@ -573,9 +605,13 @@ def _choose_voice_references(
                 duration = end - start
                 if duration < 1.2 or duration > 12.0 or start < 0 or end > len(source) / rate + .02:
                     continue
+                # Do not clone the voice from the edge of a neighboring turn.
+                # The interior duration is checked again before using a reference.
+                start += 0.15
+                end -= 0.15
                 # Adjacent or overlapping lines can contain a second speaker.
                 if any(other.speaker_id != profile.id and
-                       min(float(other.end), end) - max(float(other.start), start) > .05
+                       min(float(other.end) + .08, end) - max(float(other.start) - .08, start) > .05
                        for other in segments[max(0, index - 2):index] + segments[index + 1:index + 3]):
                     continue
                 feat = features[index] if features is not None else _acoustic_features(_load_segment(source, start, min(end, start + 8)))
@@ -664,6 +700,7 @@ def analyze_characters(
     """
     cache = work_dir / "character_analysis.json"
     signature = {
+        "analysis_version": 5,
         "segments": [[round(float(s.start), 3), round(float(s.end), 3), str(s.text)] for s in segments],
         "max_speakers": int(max_speakers),
         "threshold": float(speaker_threshold),
@@ -712,7 +749,11 @@ def analyze_characters(
             waves = []
             batch_feats = []
             for seg in batch_segments:
-                x = _load_segment(f, float(seg.start), float(seg.end))
+                # Whisper boundaries often include a fragment of the previous
+                # or next speaker. Embed the interior of sufficiently long cues.
+                start, end = float(seg.start), float(seg.end)
+                edge = min(0.15, max(0.0, (end - start - 0.35) / 2))
+                x = _load_segment(f, start + edge, end - edge)
                 waves.append(x)
                 batch_feats.append(_acoustic_features(x, int(f.samplerate)))
             feats.extend(batch_feats)
@@ -724,7 +765,7 @@ def analyze_characters(
     threshold = float(speaker_threshold)
     if threshold <= 0:
         threshold = 0.60 if embedder.backend == "speechbrain-ecapa" else 0.91
-    labels = _greedy_cluster(embeds, max(2, int(max_speakers)), threshold)
+    labels = _greedy_cluster(embeds, max(2, int(max_speakers)), threshold, feats)
     cluster_ids = sorted(set(labels))
     total_speech = sum(max(0.01, float(s.end) - float(s.start)) for s in segments)
     global_flat = float(np.median([x.flatness for x in feats])) if feats else 0.01
