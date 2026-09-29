@@ -32,7 +32,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
                  patch("anime_dubber.core.translate_with_llm",
                        side_effect=lambda rows, *_: [Segment(s.start, s.end, s.text, s.text) for s in rows]), \
                  patch("anime_dubber.core.separate_dialogue") as separation:
-                with self.assertRaisesRegex(PipelineError, "Translation is incomplete"):
+                with self.assertRaisesRegex(PipelineError, "translation to en is incomplete"):
                     run_pipeline(cfg, lambda _: None, runner)
             self.assertIn("chinese_srt", published)
             self.assertNotIn("translated_srt", published)
@@ -97,6 +97,64 @@ class PipelineOrchestrationTests(unittest.TestCase):
                 results = run_pipeline(cfg, lambda _: None, CommandRunner())
             self.assertEqual(calls, [(vocals, "transcribe"), (vocals, "translate")])
             self.assertIn("Hello", results["translated_srt"].read_text())
+
+    def test_auto_detected_english_with_chinese_transcript_is_retranscribed_and_translated(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); video = root / "video.mp4"; video.write_bytes(b"video")
+            audio = root / "audio.wav"; audio.write_bytes(b"audio")
+            config = Config(source=str(video), output_dir=root / "out", source_language="auto",
+                            target_language="en", translation="llm", mode="subtitles")
+            asr_calls = []
+            def recognize(_audio, cfg, _work, _runner, _progress, *, task="transcribe"):
+                asr_calls.append(cfg.source_language)
+                cfg.source_language = "en" if cfg.source_language == "auto" else cfg.source_language
+                return [Segment(0, 2, "天下武林门派如林")]
+            def translate(rows, *_):
+                return [Segment(s.start, s.end, s.text, "There are many martial arts sects") for s in rows]
+            with patch("anime_dubber.core.extract_audio", return_value=audio), \
+                 patch("anime_dubber.core.separate_dialogue", return_value=(audio, audio)), \
+                 patch("anime_dubber.core.transcribe_audio", side_effect=recognize), \
+                 patch("anime_dubber.core.translate_with_llm", side_effect=translate) as llm:
+                result = run_pipeline(config, lambda _: None, CommandRunner())
+            self.assertEqual(asr_calls, ["auto", "zh"])
+            self.assertEqual(config.source_language, "zh")
+            llm.assert_called_once()
+            self.assertIn("There are many martial arts sects", result["translated_srt"].read_text())
+
+    def test_whisper_source_language_output_falls_back_to_aligned_llm(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); video = root / "video.mp4"; video.write_bytes(b"video")
+            audio = root / "audio.wav"; audio.write_bytes(b"audio")
+            config = Config(source=str(video), output_dir=root / "out", source_language="zh",
+                            target_language="en", translation="whisper", mode="subtitles")
+            def recognize(*_args, **kwargs):
+                return [Segment(0, 2, "天下武林门派如林")]
+            def translate(rows, *_):
+                return [Segment(s.start, s.end, s.text, "Many martial arts sects") for s in rows]
+            with patch("anime_dubber.core.extract_audio", return_value=audio), \
+                 patch("anime_dubber.core.separate_dialogue", return_value=(audio, audio)), \
+                 patch("anime_dubber.core.transcribe_audio", side_effect=recognize), \
+                 patch("anime_dubber.core.platform.system", return_value="Darwin"), \
+                 patch("anime_dubber.core.platform.machine", return_value="arm64"), \
+                 patch("anime_dubber.core.importlib.util.find_spec", return_value=object()), \
+                 patch("anime_dubber.core.translate_with_llm", side_effect=translate) as llm:
+                result = run_pipeline(config, lambda _: None, CommandRunner())
+            llm.assert_called_once()
+            self.assertIn("Many martial arts sects", result["translated_srt"].read_text())
+
+    def test_whisper_source_language_output_explains_setup_without_translation_provider(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); video = root / "video.mp4"; video.write_bytes(b"video")
+            audio = root / "audio.wav"; audio.write_bytes(b"audio")
+            config = Config(source=str(video), output_dir=root / "out", source_language="zh",
+                            target_language="en", translation="whisper", mode="subtitles")
+            with patch("anime_dubber.core.extract_audio", return_value=audio), \
+                 patch("anime_dubber.core.separate_dialogue", return_value=(audio, audio)), \
+                 patch("anime_dubber.core.transcribe_audio", return_value=[Segment(0, 2, "天下武林门派如林")]), \
+                 patch("anime_dubber.core.platform.system", return_value="Linux"), \
+                 patch("anime_dubber.core.shutil.which", return_value=None):
+                with self.assertRaisesRegex(PipelineError, "Whisper direct translation returned source-language dialogue"):
+                    run_pipeline(config, lambda _: None, CommandRunner())
 
     def test_dub_publishes_both_subtitle_sets_before_separation_failure(self):
         with tempfile.TemporaryDirectory() as td:

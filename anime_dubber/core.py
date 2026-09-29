@@ -2258,6 +2258,38 @@ def transcribe_before_separation(
     return transcribe_source_audio(vocals, audio, config, separated_work, runner, progress)
 
 
+def recover_source_language(
+    segments: List[Segment], dialogue: Path, original: Path, config: Config,
+    work: Path, runner: CommandRunner, progress: ProgressCallback,
+    requested_language: str,
+) -> List[Segment]:
+    """Recheck an English language guess when the transcript is clearly Han speech."""
+    if not segments or config.source_language != "en":
+        return segments
+    text = " ".join(s.text for s in segments)
+    han = len(re.findall(r"[\u3400-\u9fff]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    if han < 6 or han < 2 * latin:
+        return segments
+    if requested_language != "auto":
+        raise PipelineError("Source language is set to English, but the recognized dialogue is mostly Chinese. "
+                            "Set the source language to Automatic or Chinese and retry. Source audio was saved.")
+    progress("Language detection said English, but the transcript is mostly Chinese; retranscribing as Chinese…")
+    config.source_language = "zh"
+    fallback_work = work / "vocals_primary_asr_v1" / "original_soundtrack_asr"
+    asr_work = (fallback_work if dialogue == original and fallback_work.exists()
+                else work / "original_soundtrack_asr_v1" if dialogue == original
+                else work / "vocals_primary_asr_v1")
+    asr_work.mkdir(parents=True, exist_ok=True)
+    recovered = transcribe_audio(dialogue, config, asr_work, runner, progress, task="transcribe")
+    recovered_text = " ".join(s.text for s in recovered)
+    if len(re.findall(r"[\u3400-\u9fff]", recovered_text)) < 6:
+        raise PipelineError("Automatic language detection and Chinese retranscription disagreed. "
+                            "Check the source subtitles and set the source language explicitly before retrying.")
+    _atomic_json_write(asr_work / "detected_source_language.json", {"language": "zh"})
+    return recovered
+
+
 def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
     progress = progress or print
     runner = runner or CommandRunner(progress)
@@ -2273,7 +2305,10 @@ def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, ru
     if callback:
         callback("source_video", video, config.source_language)
     audio = extract_audio(video, work, runner, progress, config)
-    segments, _transcript_audio = transcribe_before_separation(audio, config, work, runner, progress)
+    requested_language = config.source_language
+    segments, transcript_audio = transcribe_before_separation(audio, config, work, runner, progress)
+    segments = recover_source_language(segments, transcript_audio, audio, config, work, runner,
+                                       progress, requested_language)
     if not segments:
         raise PipelineError("No speech was recognized in the original soundtrack. Check that the source video has audible dialogue.")
     zh_srt = out / f"{key}_{config.source_language}.srt"; write_srt(segments, zh_srt, translated=False)
@@ -2325,7 +2360,10 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
             path.unlink()
     publish("source_video", video, config.source_language)
     audio = extract_audio(video, work, runner, progress, config)
+    requested_language = config.source_language
     zh_segments, transcript_audio = transcribe_before_separation(audio, config, work, runner, progress)
+    zh_segments = recover_source_language(zh_segments, transcript_audio, audio, config, work,
+                                          runner, progress, requested_language)
     if not zh_segments:
         raise PipelineError("No speech was recognized in the original soundtrack. Check that the source video has audible dialogue; no dub or empty subtitle file was produced.")
     source_kind = "chinese" if config.source_language == "zh" else "source"
@@ -2356,6 +2394,22 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         translation_work.mkdir(parents=True, exist_ok=True)
         en_whisper = transcribe_audio(transcript_audio, config, translation_work, runner, progress, task="translate")
         segments = [Segment(s.start, s.end, s.text, s.text) for s in en_whisper]
+        if segments and any(not translation_is_usable(s.text, s.translated, "en", config.target_language)
+                            for s in segments):
+            # Whisper translation can return its source-language transcription.
+            # Translate the aligned source transcript instead when a local model exists.
+            if platform.system() == "Darwin" and platform.machine() == "arm64" and importlib.util.find_spec("mlx_lm"):
+                progress("Whisper returned source-language dialogue; translating aligned source subtitles with the local LLM…")
+                segments = translate_with_llm(zh_segments, config, work, runner, progress)
+                translation_mode = "llm"
+            elif shutil.which("ollama"):
+                progress("Whisper returned source-language dialogue; translating aligned source subtitles with Ollama…")
+                segments = translate_with_ollama_provider(zh_segments, config, work, runner, progress)
+                translation_mode = "ollama"
+            else:
+                raise PipelineError("Whisper direct translation returned source-language dialogue. "
+                                    "Source subtitles were saved. Install a local translation model or choose "
+                                    "Local LLM/Ollama in Settings, then retry; no incorrect dub was generated.")
     else:
         raise PipelineError(f"Unsupported translation mode: {translation_mode}")
 
@@ -2369,8 +2423,9 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
                                                 else config.source_language, config.target_language)]
         if invalid:
             examples = ", ".join(map(str, invalid[:8]))
-            raise PipelineError(f"Translation is incomplete or still in the source language at lines {examples}. "
-                                "Source subtitles were saved. Retry with a stronger translation model; "
+            raise PipelineError(f"{translation_mode.upper()} translation to {config.target_language} is incomplete "
+                                f"at lines {examples} (detected source: {config.source_language}). "
+                                "Source subtitles were saved. Check their language and select a stronger translation model; "
                                 "no incorrect dub will be generated.")
 
     require_complete_translation()
