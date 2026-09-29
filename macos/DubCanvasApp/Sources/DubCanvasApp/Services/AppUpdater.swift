@@ -132,9 +132,9 @@ final class AppUpdater: ObservableObject {
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path], logURL: logURL)
         var requirementsChanged = false
         let requirementNames = ["requirements.txt", "requirements-cross-platform.txt", "requirements-premium-voices.txt"]
-        for name in requirementNames {
+        for name in requirementNames + ["constraints.txt"] {
             let relative = "Contents/Resources/backend/\(name)"
-            if try Data(contentsOf: current.appendingPathComponent(relative)) != Data(contentsOf: app.appendingPathComponent(relative)) { requirementsChanged = true }
+            if (try? Data(contentsOf: current.appendingPathComponent(relative))) != (try Data(contentsOf: app.appendingPathComponent(relative))) { requirementsChanged = true }
         }
         do {
             try run("/usr/bin/ditto", [app.path, staged.path], logURL: logURL)
@@ -143,8 +143,9 @@ final class AppUpdater: ObservableObject {
             let backend = staged.appendingPathComponent("Contents/Resources/backend")
             let python = backend.appendingPathComponent(".venv/bin/python").path
             if requirementsChanged {
-                try run(python, ["-m", "pip", "install"] + requirementNames.flatMap { ["-r", backend.appendingPathComponent($0).path] }, logURL: logURL)
+                try run(python, ["-m", "pip", "install"] + requirementNames.flatMap { ["-r", backend.appendingPathComponent($0).path] }, logURL: logURL, directory: backend)
             }
+            try run(python, ["-m", "pip", "check"], logURL: logURL)
             try run(python, ["-m", "dubcanvas", "--help"], logURL: logURL, directory: backend)
             try run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", staged.path], logURL: logURL)
             let helper = work.appendingPathComponent("install_update.sh")

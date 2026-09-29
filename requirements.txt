@@ -1,3 +1,4 @@
+-c constraints.txt
 mlx-whisper
 mlx-lm
 demucs>=4.1.0,<5

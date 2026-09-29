@@ -12,6 +12,7 @@ fi
 "$PYTHON_BIN" -m venv .venv
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/python -m pip install -r requirements-cross-platform.txt
+.venv/bin/python -m pip check
 
 echo
 echo "Python dependencies installed."

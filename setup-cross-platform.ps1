@@ -14,6 +14,9 @@ try {
 $venvPython = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 & $venvPython -m pip install --upgrade pip setuptools wheel
 & $venvPython -m pip install -r requirements-cross-platform.txt
+if ($LASTEXITCODE -ne 0) { throw "Python dependency installation failed." }
+& $venvPython -m pip check
+if ($LASTEXITCODE -ne 0) { throw "Python dependencies are incompatible. Resolve the reported conflicts before running DubCanvas." }
 
 Write-Host ""
 Write-Host "Python dependencies installed."

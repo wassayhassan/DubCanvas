@@ -46,20 +46,21 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -r requirements.txt
 
 echo "Installing a current app-local yt-dlp build…"
-if ! python -m pip install --upgrade "yt-dlp[default,curl-cffi] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz"; then
+if ! python -m pip install -c constraints.txt --upgrade "yt-dlp[default,curl-cffi] @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz"; then
   echo "WARNING: Could not install yt-dlp master from GitHub; falling back to PyPI."
-  python -m pip install --upgrade --pre "yt-dlp[default,curl-cffi]"
+  python -m pip install -c constraints.txt --upgrade --pre "yt-dlp[default,curl-cffi]"
 fi
 echo "App-local yt-dlp version:"
 python -m yt_dlp --version
 
 echo "Installing optional high-accuracy speaker encoder…"
-if ! python -m pip install "speechbrain>=1.0,<2"; then
+if ! python -m pip install -c constraints.txt "speechbrain>=1.0,<2"; then
   echo "WARNING: SpeechBrain could not be installed. DubCanvas will use its acoustic speaker-clustering fallback."
 fi
 
 echo "Installing local dubbing voices for supported target languages…"
 /bin/zsh macos/install_voice_engines.sh --no-rebuild
+python -m pip check
 
 echo "Running post-install source preflight…"
 python verify_source.py

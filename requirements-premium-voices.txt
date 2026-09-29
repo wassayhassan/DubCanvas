@@ -1,4 +1,5 @@
 # Optional high-quality local voice engines.
 # Install into the same DubCanvas Python environment.
+-c constraints.txt
 kokoro>=0.9.4,<1
 chatterbox-tts>=0.1.7,<0.2

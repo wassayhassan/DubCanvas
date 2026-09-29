@@ -135,6 +135,7 @@ ditto "$ROOT/dubcanvas" "$BACKEND/dubcanvas"
 cp "$ROOT/requirements.txt" "$BACKEND/requirements.txt"
 cp "$ROOT/requirements-cross-platform.txt" "$BACKEND/requirements-cross-platform.txt"
 cp "$ROOT/requirements-premium-voices.txt" "$BACKEND/requirements-premium-voices.txt"
+cp "$ROOT/constraints.txt" "$BACKEND/constraints.txt"
 cp "$ROOT/verify_source.py" "$BACKEND/verify_source.py"
 cp "$ROOT/macos/install_update.sh" "$RESOURCES/install_update.sh"
 find "$BACKEND" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
