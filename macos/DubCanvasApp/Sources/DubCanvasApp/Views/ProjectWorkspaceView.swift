@@ -378,7 +378,7 @@ struct ProjectWorkspaceView: View {
 
     private func nextStage(after stage: String) -> String {
         switch stage {
-        case "downloading", "extracting_audio", "preparing": "Speech and speakers"
+        case "validating_source", "downloading", "extracting_audio", "preparing": "Speech and speakers"
         case "transcribing": "Subtitles"
         default: "Dub and render"
         }
@@ -442,8 +442,15 @@ struct ProjectWorkspaceView: View {
 
     private func loadSource(_ project: ProjectSummary) {
         let path = project.artifacts["source_video"] ?? project.source
-        sourcePlayer = FileManager.default.fileExists(atPath: path)
-            ? AVPlayer(url: URL(fileURLWithPath: path)) : nil
+        guard FileManager.default.fileExists(atPath: path) else {
+            sourcePlayer?.pause()
+            sourcePlayer = nil
+            return
+        }
+        if (sourcePlayer?.currentItem?.asset as? AVURLAsset)?.url.path != path {
+            sourcePlayer?.pause()
+            sourcePlayer = AVPlayer(url: URL(fileURLWithPath: path))
+        }
     }
 
     private func media(_ project: ProjectSummary) -> some View {

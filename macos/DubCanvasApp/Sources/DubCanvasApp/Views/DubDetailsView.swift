@@ -432,24 +432,3 @@ struct DubDetailsView: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
-
-// SwiftUI's VideoPlayer initializes _AVKit_SwiftUI when the details view
-// appears. On affected macOS versions that framework aborts while creating
-// class metadata. The AppKit player avoids that bridge and keeps playback
-// controls inside the project workspace.
-struct NativeDubPlayer: NSViewRepresentable {
-    let player: AVPlayer
-
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
-        view.controlsStyle = .floating
-        view.player = player
-        return view
-    }
-
-    func updateNSView(_ view: AVPlayerView, context: Context) {
-        if view.player !== player {
-            view.player = player
-        }
-    }
-}
