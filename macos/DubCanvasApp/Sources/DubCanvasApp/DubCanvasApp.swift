@@ -19,29 +19,33 @@ struct DubCanvasApp: App {
     @StateObject private var libraryState = AppState()
 
     var body: some Scene {
-        Window("Welcome to DubCanvas", id: "welcome") {
-            ProjectsView()
-                .environmentObject(libraryState)
-                .frame(minWidth: 760, minHeight: 540)
+        Group {
+            Window("Welcome to DubCanvas", id: "welcome") {
+                ProjectsView()
+                    .environmentObject(libraryState)
+                    .frame(minWidth: 760, minHeight: 540)
+            }
+            .defaultSize(width: 920, height: 640)
+
+            WindowGroup("Project Workspace", id: "workspace", for: WorkspaceRequest.self) { request in
+                WorkspaceWindow(request: request)
+                    .frame(minWidth: 940, minHeight: 650)
+            }
+            .defaultSize(width: 1180, height: 780)
+
+            Settings {
+                SettingsView()
+                    .environmentObject(libraryState)
+                    .frame(width: 720, height: 620)
+            }
+
+            Window("DubCanvas Updates", id: "updates") {
+                AppUpdateView()
+            }
+            .windowResizability(.contentSize)
         }
-        .defaultSize(width: 920, height: 640)
         .commands {
             ProjectWindowCommands(libraryState: libraryState)
-        }
-
-        WindowGroup("Project Workspace", id: "workspace", for: WorkspaceRequest.self) { request in
-            WorkspaceWindow(request: request)
-                .frame(minWidth: 940, minHeight: 650)
-        }
-        .defaultSize(width: 1180, height: 780)
-        .commands {
-            ProjectWindowCommands(libraryState: libraryState)
-        }
-
-        Settings {
-            SettingsView()
-                .environmentObject(libraryState)
-                .frame(width: 720, height: 620)
         }
     }
 }
@@ -93,6 +97,7 @@ private struct WorkspaceWindow: View {
 private struct ProjectWindowCommands: Commands {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var libraryState: AppState
+    @ObservedObject private var updater = AppUpdater.shared
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -103,7 +108,14 @@ private struct ProjectWindowCommands: Commands {
             Button("Show Projects") { openWindow(id: "welcome") }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
         }
-        CommandMenu("DubCanvas") {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                openWindow(id: "updates")
+                Task { await updater.check() }
+            }
+            .disabled(updater.busy)
+        }
+        CommandGroup(after: .help) {
             Button("System Check") { libraryState.runSystemCheck() }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
         }

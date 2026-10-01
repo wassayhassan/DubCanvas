@@ -5,6 +5,16 @@ import XCTest
 
 final class AppUpdaterTests: XCTestCase {
     private let revision = String(repeating: "a", count: 40)
+    @MainActor func testRestartWaitsForUpdateWindowDismissalAndShutsDownBeforeQuit() async {
+        var actions: [String] = []
+        AppUpdater.finishRestart(shutdown: { actions.append("shutdown") }, terminate: { actions.append("quit") })
+        actions.append("window closed")
+        XCTAssertEqual(actions, ["window closed"])
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(actions, ["window closed", "shutdown", "quit"])
+    }
     func testManifestRejectsInvalidFields() throws {
         let valid = AppUpdateManifest(schema: 1, revision: revision, sourceTimestamp: 123, version: "4.0", sha256: String(repeating: "b", count: 64))
         XCTAssertNoThrow(try valid.validate())

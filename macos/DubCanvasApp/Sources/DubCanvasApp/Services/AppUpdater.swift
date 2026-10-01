@@ -61,7 +61,7 @@ final class AppUpdater: ObservableObject {
         } catch { self.error = error.localizedDescription; status = "Could not check for updates." }
     }
 
-    func installApprovedUpdate() async {
+    func installApprovedUpdate(closeUpdateWindow: () -> Void) async {
         guard !busy, let manifest = offeredUpdate else { return }
         guard !AppState.hasRunningJobs else { error = "Finish or pause all running jobs before updating."; return }
         busy = true; error = nil
@@ -101,12 +101,24 @@ final class AppUpdater: ObservableObject {
             process.arguments = [helper.path, String(ProcessInfo.processInfo.processIdentifier), target.path, destination.path, logURL.path]
             try process.run()
             status = "Restarting DubCanvas…"
-            AppState.shutdownAllForUpdate()
-            NSApplication.shared.terminate(nil)
+            closeUpdateWindow()
+            Self.finishRestart(shutdown: { AppState.shutdownAllForUpdate() },
+                               terminate: { NSApplication.shared.terminate(nil) })
         } catch {
             self.error = error.localizedDescription; status = "Update stopped. The installed app is unchanged."
             if let staged { try? FileManager.default.removeItem(at: staged) }
             if let work { try? FileManager.default.removeItem(at: work) }
+        }
+    }
+
+    static func finishRestart(
+        shutdown: @escaping @MainActor () -> Void,
+        terminate: @escaping @MainActor () -> Void
+    ) {
+        // Let the update window close before AppKit evaluates termination.
+        DispatchQueue.main.async {
+            shutdown()
+            terminate()
         }
     }
 
@@ -172,29 +184,36 @@ final class AppUpdater: ObservableObject {
     }
 }
 
-struct AppUpdateControl: View {
+struct AppUpdateView: View {
     @ObservedObject private var updater = AppUpdater.shared
-    @State private var showing = false
+    @Environment(\.dismiss) private var dismiss
+
     var body: some View {
-        Button { showing = true; Task { await updater.check() } } label: { Label("Check for Updates", systemImage: "arrow.down.circle") }
-        .disabled(updater.busy)
-        .sheet(isPresented: $showing) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("DubCanvas Updates").font(.title2.bold())
-                Text(updater.status)
-                if updater.busy { ProgressView() }
+        VStack(alignment: .leading, spacing: 16) {
+            Text("DubCanvas Updates").font(.title2.bold())
+            Text(updater.status)
+            if updater.busy { ProgressView() }
+            if updater.offeredUpdate != nil {
+                Text("Update and Restart installs the new app, preserves your projects and models, and restarts DubCanvas. Finish or pause all jobs first.")
+                    .foregroundStyle(.secondary)
+            }
+            if let error = updater.error {
+                Text(error).foregroundStyle(.red).textSelection(.enabled)
+            }
+            HStack {
+                Spacer()
+                Button(updater.offeredUpdate == nil ? "Close" : "Later") { dismiss() }
+                    .disabled(updater.busy)
                 if updater.offeredUpdate != nil {
-                    Text("Update and Restart downloads the new app, preserves your projects and models, updates Python packages if required, and restarts DubCanvas. Finish or pause all jobs first.").foregroundStyle(.secondary)
-                }
-                if let error = updater.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                HStack {
-                    Spacer()
-                    Button(updater.offeredUpdate == nil ? "Close" : "Later") { showing = false }.disabled(updater.busy)
-                    if updater.offeredUpdate != nil {
-                        Button("Update and Restart") { Task { await updater.installApprovedUpdate() } }.buttonStyle(.borderedProminent).disabled(updater.busy)
+                    Button("Update and Restart") {
+                        Task { await updater.installApprovedUpdate(closeUpdateWindow: { dismiss() }) }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(updater.busy)
                 }
-            }.padding(24).frame(width: 500).interactiveDismissDisabled(updater.busy)
+            }
         }
+        .padding(24)
+        .frame(width: 500)
     }
 }
