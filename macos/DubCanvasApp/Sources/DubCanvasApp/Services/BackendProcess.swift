@@ -125,12 +125,21 @@ final class BackendProcess {
     }
 
     func stop() {
-        if process?.isRunning == true {
-            _ = try? send(method: "shutdown", id: "shutdown")
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                guard let process = self?.process, process.isRunning else { return }
-                process.terminate()
-            }
+        guard let process, process.isRunning else { return }
+        Self.requestShutdown(process: process, input: stdinPipe?.fileHandleForWriting, writeLock: writeLock)
+    }
+
+    static func requestShutdown(process: Process, input: FileHandle?, writeLock: NSLock) {
+        // A stalled backend may stop reading stdin. Neither a full pipe nor an
+        // in-flight writer may block the UI thread or delay application quit.
+        DispatchQueue.global().async {
+            writeLock.lock()
+            defer { writeLock.unlock() }
+            try? input?.write(contentsOf: Data("{\"type\":\"request\",\"id\":\"shutdown\",\"method\":\"shutdown\",\"params\":{}}\n".utf8))
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+            // Capture this process, so a later backend start cannot be stopped.
+            if process.isRunning { process.terminate() }
         }
     }
 

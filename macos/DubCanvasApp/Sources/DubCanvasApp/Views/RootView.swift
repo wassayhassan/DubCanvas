@@ -71,7 +71,6 @@ struct RootView: View {
                 .toolbar {
                     ToolbarItemGroup(placement: .primaryAction) {
                         backendBadge
-                        AppUpdateControl()
                         if state.activeJobID != nil || state.startPending || state.jobStartPending {
                             Button { state.selection = state.currentProject == nil ? .projects : .overview } label: {
                                 Label(state.statusText, systemImage: "hourglass")

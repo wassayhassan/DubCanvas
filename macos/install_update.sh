@@ -10,6 +10,17 @@ exec >> "$LOG_FILE" 2>&1
 echo "Waiting for DubCanvas to quit…"
 for attempt in {1..60}; do
   if ! kill -0 "$APP_PID" 2>/dev/null; then break; fi
+  if [[ "$attempt" -eq 15 ]]; then
+    # Older builds can remain in a modal UI or a blocked backend shutdown.
+    # Never signal a reused PID or another program: match the installed binary.
+    RUNNING_COMMAND="$(/bin/ps -p "$APP_PID" -o comm= 2>/dev/null || true)"
+    if [[ "$RUNNING_COMMAND" == "$TARGET/Contents/MacOS/DubCanvas" ]]; then
+      echo "Graceful quit timed out; sending TERM to the verified DubCanvas process $APP_PID."
+      kill -TERM "$APP_PID" 2>/dev/null || true
+    else
+      echo "Quit fallback skipped: PID $APP_PID does not match the installed DubCanvas executable."
+    fi
+  fi
   sleep 1
 done
 if kill -0 "$APP_PID" 2>/dev/null; then

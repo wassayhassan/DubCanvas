@@ -42,7 +42,6 @@ struct ProjectsView: View {
         }
         .navigationTitle("Projects")
         .toolbar {
-            AppUpdateControl()
             Button { state.refreshProjects() } label: {
                 Label("Refresh Projects", systemImage: "arrow.clockwise")
             }
