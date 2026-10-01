@@ -102,7 +102,8 @@ final class AppUpdater: ObservableObject {
             try process.run()
             status = "Restarting DubCanvas…"
             closeUpdateWindow()
-            Self.finishRestart()
+            Self.finishRestart(shutdown: { AppState.shutdownAllForUpdate() },
+                               terminate: { NSApplication.shared.terminate(nil) })
         } catch {
             self.error = error.localizedDescription; status = "Update stopped. The installed app is unchanged."
             if let staged { try? FileManager.default.removeItem(at: staged) }
@@ -111,8 +112,8 @@ final class AppUpdater: ObservableObject {
     }
 
     static func finishRestart(
-        shutdown: @escaping () -> Void = { AppState.shutdownAllForUpdate() },
-        terminate: @escaping () -> Void = { NSApplication.shared.terminate(nil) }
+        shutdown: @escaping @MainActor () -> Void,
+        terminate: @escaping @MainActor () -> Void
     ) {
         // Let the update window close before AppKit evaluates termination.
         DispatchQueue.main.async {
