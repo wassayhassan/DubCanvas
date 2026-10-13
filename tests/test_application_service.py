@@ -116,7 +116,7 @@ class ApplicationServiceTests(unittest.TestCase):
             subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
             store.publish_artifact("translated_srt", str(subtitle), dub_id="dub_old",
                                    version_id="dub_old", language="en")
-            with patch("anime_dubber.application.service.os.kill", side_effect=ProcessLookupError):
+            with patch("anime_dubber.application.service.process_alive", return_value=False):
                 project = service.list_projects(temp)[0]
             self.assertEqual(project["status"], "paused")
             self.assertEqual(project["dubs"][0]["status"], "paused")
@@ -130,7 +130,7 @@ class ApplicationServiceTests(unittest.TestCase):
             store.create(source="source.mp4", name="Episode")
             store.begin(job_id="job_live", kind="run", dub_id="dub_live",
                         config={"source": "source.mp4", "output_dir": temp})
-            with patch("anime_dubber.application.service.os.kill", return_value=None):
+            with patch("anime_dubber.application.service.process_alive", return_value=True):
                 project = service.get_project(temp, store.project_id)
             self.assertEqual(project["status"], "running")
             self.assertEqual(store.load()["active_job_id"], "job_live")
