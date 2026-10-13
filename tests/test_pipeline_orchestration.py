@@ -302,7 +302,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
                 sf.write(output, speech(400), rate)
 
             cfg = Config(source=str(video), output_dir=root / "project", version_id="first_dub",
-                         tts_engine="chatterbox", translation="llm", speaker_backend="acoustic",
+                         tts_engine="chatterbox", auto_voice_references=True, translation="llm", speaker_backend="acoustic",
                          speaker_threshold=.91, multi_character=True)
             with patch("anime_dubber.core.extract_audio", return_value=vocals), \
                  patch("anime_dubber.core.separate_dialogue", return_value=(vocals, vocals)), \

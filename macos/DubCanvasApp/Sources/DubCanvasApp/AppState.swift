@@ -40,11 +40,11 @@ final class AppState: ObservableObject {
     @Published var ollamaURL = "http://127.0.0.1:11434"
     @Published var ollamaModel = "qwen3:4b"
 
-    @Published var voiceProvider: VoiceProvider = .auto
+    @Published var voiceProvider: VoiceProvider = .kokoro
     @Published var fallbackVoice = ""
     @Published var ttsRate = 210
     @Published var chatterboxReferenceAudio = ""
-    @Published var autoSourceVoices = true
+    @Published var autoSourceVoices = false
     @Published var chatterboxExpressiveness = 0.5
     @Published var chatterboxDevice = "auto"
     @Published var chatterboxTurbo = true
@@ -271,11 +271,11 @@ final class AppState: ObservableObject {
         reviewModel = preferences.reviewModel ?? reviewModel
         ollamaURL = preferences.ollamaURL
         ollamaModel = preferences.ollamaModel
-        voiceProvider = VoiceProvider(rawValue: preferences.voiceProvider) ?? .auto
+        voiceProvider = VoiceProvider(rawValue: preferences.voiceProvider) ?? .kokoro
         fallbackVoice = preferences.fallbackVoice
         ttsRate = preferences.ttsRate
         chatterboxReferenceAudio = preferences.chatterboxReferenceAudio
-        autoSourceVoices = preferences.autoSourceVoices ?? true
+        autoSourceVoices = preferences.autoSourceVoices ?? false
         chatterboxExpressiveness = preferences.chatterboxExpressiveness
         chatterboxDevice = preferences.chatterboxDevice
         chatterboxTurbo = preferences.chatterboxTurbo

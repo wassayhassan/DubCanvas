@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Foundation
 import SwiftUI
+import Darwin
 
 struct AppUpdateManifest: Decodable, Sendable {
     let schema: Int
@@ -81,7 +82,8 @@ final class AppUpdater: ObservableObject {
             work = directory
             try fm.createDirectory(at: directory, withIntermediateDirectories: true)
             status = "Downloading update…"
-            let (download, response) = try await URLSession.shared.download(from: manifest.downloadURL)
+            let downloadRequest = URLRequest(url: manifest.downloadURL, timeoutInterval: 300)
+            let (download, response) = try await URLSession.shared.download(for: downloadRequest)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateFailure("The update download failed.") }
             let archive = directory.appendingPathComponent("update.zip")
             try fm.moveItem(at: download, to: archive)
@@ -155,7 +157,7 @@ final class AppUpdater: ObservableObject {
             let backend = staged.appendingPathComponent("Contents/Resources/backend")
             let python = backend.appendingPathComponent(".venv/bin/python").path
             if requirementsChanged {
-                try run(python, ["-m", "pip", "install"] + requirementNames.flatMap { ["-r", backend.appendingPathComponent($0).path] }, logURL: logURL, directory: backend)
+                try run(python, ["-m", "pip", "install"] + requirementNames.flatMap { ["-r", backend.appendingPathComponent($0).path] }, logURL: logURL, directory: backend, timeout: 1800)
             }
             try run(python, ["-m", "pip", "check"], logURL: logURL)
             try run(python, ["-m", "dubcanvas", "--help"], logURL: logURL, directory: backend)
@@ -166,7 +168,7 @@ final class AppUpdater: ObservableObject {
         } catch { try? fm.removeItem(at: staged); throw error }
     }
 
-    nonisolated static func run(_ executable: String, _ arguments: [String], logURL: URL, directory: URL? = nil) throws {
+    nonisolated static func run(_ executable: String, _ arguments: [String], logURL: URL, directory: URL? = nil, timeout: TimeInterval = 300) throws {
         let process = Process()
         let output = try FileHandle(forWritingTo: logURL)
         defer { try? output.close() }
@@ -179,7 +181,20 @@ final class AppUpdater: ObservableObject {
             environment["PYTHONPATH"] = directory.path; process.environment = environment
         }
         process.standardOutput = output; process.standardError = output
-        try process.run(); process.waitUntilExit()
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        try process.run()
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            if finished.wait(timeout: .now() + 5) == .timedOut, process.isRunning {
+                Darwin.kill(process.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 5)
+            }
+            let detail = "Update command timed out: \(URL(fileURLWithPath: executable).lastPathComponent). The installed app was not changed. See \(logURL.path)."
+            _ = try? output.seekToEnd()
+            try? output.write(contentsOf: Data(("\n\(Date().ISO8601Format()) [error] \(detail)\n").utf8))
+            throw UpdateFailure(detail)
+        }
         guard process.terminationStatus == 0 else { throw UpdateFailure("Update preparation failed (exit \(process.terminationStatus)). See \(logURL.path).") }
     }
 }

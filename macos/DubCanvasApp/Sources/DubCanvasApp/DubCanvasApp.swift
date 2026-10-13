@@ -111,9 +111,8 @@ private struct ProjectWindowCommands: Commands {
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…") {
                 openWindow(id: "updates")
-                Task { await updater.check() }
+                Task { if !updater.busy { await updater.check() } }
             }
-            .disabled(updater.busy)
         }
         CommandGroup(after: .help) {
             Button("System Check") { libraryState.runSystemCheck() }

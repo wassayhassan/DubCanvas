@@ -27,6 +27,7 @@ final class BackendProcess {
     private var stderrPipe: Pipe?
     private var stdoutBuffer = Data()
     private let writeLock = NSLock()
+    private var requests = BackendRequestQueue()
 
     private var onMessage: (([String: Any]) -> Void)?
     private var onDiagnostic: ((String) -> Void)?
@@ -38,6 +39,9 @@ final class BackendProcess {
         onTermination: @escaping (Int32) -> Void
     ) throws {
         if process?.isRunning == true { return }
+        requests.cancelAll()
+        requests = BackendRequestQueue()
+        stdoutBuffer = Data()
 
         self.onMessage = onMessage
         self.onDiagnostic = onDiagnostic
@@ -88,10 +92,14 @@ final class BackendProcess {
         }
 
         process.terminationHandler = { [weak self] process in
-            self?.onTermination?(process.terminationStatus)
+            guard let self, self.process === process else { return }
+            self.requests.cancelAll()
+            self.onTermination?(process.terminationStatus)
         }
 
-        try process.run()
+        self.process = process
+        do { try process.run() }
+        catch { self.process = nil; throw error }
 
         self.process = process
         self.stdinPipe = input
@@ -101,7 +109,7 @@ final class BackendProcess {
 
     @discardableResult
     func send(method: String, params: [String: Any] = [:], id: String = UUID().uuidString) throws -> String {
-        guard process?.isRunning == true, let input = stdinPipe else {
+        guard let process, process.isRunning, let input = stdinPipe else {
             throw BackendProcessError.processNotRunning
         }
 
@@ -118,9 +126,20 @@ final class BackendProcess {
         }
         data.append(0x0A)
 
-        writeLock.lock()
-        defer { writeLock.unlock() }
-        try input.fileHandleForWriting.write(contentsOf: data)
+        let encoded = data
+        let lock = writeLock
+        let message = onMessage
+        let timeout: TimeInterval = method == "preview_voice" ? 600 : 120
+        try requests.enqueue(id: id, timeout: timeout, write: {
+            lock.lock(); defer { lock.unlock() }
+            guard process.isRunning else { throw BackendProcessError.processNotRunning }
+            try input.fileHandleForWriting.write(contentsOf: encoded)
+        }, failure: { detail in
+            message?(["type": "response", "id": id, "ok": false,
+                      "error": ["type": "BackendTimeoutOrWriteError", "message": detail]])
+            // Prevent timed-out queued commands from applying after a retry.
+            if process.isRunning { process.terminate() }
+        })
         return id
     }
 
@@ -157,6 +176,10 @@ final class BackendProcess {
                     onDiagnostic?(text + "\n")
                 }
                 continue
+            }
+            if dictionary["type"] as? String == "response",
+               let id = dictionary["id"] as? String, !requests.complete(id: id) {
+                continue // Ignore replies to timed-out or cancelled requests.
             }
             onMessage?(dictionary)
         }

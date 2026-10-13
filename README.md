@@ -19,7 +19,7 @@ Setup installs dependencies, runs checks, and installs the app in `/Applications
 3. Open the project to track progress and download subtitles as soon as they are ready.
 4. Open a completed dub to preview and export it. Use **New Dub** inside that project for another language, voice, or model. Use **Compare Versions** to review two completed dubs.
 
-Automatic settings choose available local models. The first run may download model weights. For the best local voices, install the optional voice engines:
+New dubs use Kokoro preset voices by default, without voice cloning. Choose Chatterbox and enable source voice references in Advanced to opt in to cloning. Automatic settings choose available local models. The first run may download model weights. For the best local voices, install the optional voice engines:
 
 ```bash
 zsh macos/install_voice_engines.sh

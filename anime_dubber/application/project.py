@@ -5,6 +5,9 @@ import hashlib
 import os
 import shutil
 import uuid
+import tempfile
+from functools import wraps
+from .project_lock import folder_lock
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -42,9 +45,28 @@ def _redacted_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def _atomic_write(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", suffix=".tmp", delete=False) as handle:
+            tmp = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp.replace(path)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+
+
+
+def serialized(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with folder_lock(self.output_dir):
+            return method(self, *args, **kwargs)
+    return wrapped
+
 
 
 def _upgrade(data: dict) -> dict:
@@ -117,6 +139,7 @@ class ProjectStore:
         except ValueError:
             return self._validated_name(f"{title} ({self.project_id[-8:]})")
 
+    @serialized
     def create(self, *, source: str, name: str = "", series_id: str = "", source_title: str = "") -> dict:
         if not source.strip():
             raise ValueError("source is required")
@@ -142,6 +165,7 @@ class ProjectStore:
         _atomic_write(self.manifest_path, data)
         return data
 
+    @serialized
     def rename(self, name: str, series_id: str) -> dict:
         payload = self.load()
         if not payload:
@@ -152,6 +176,7 @@ class ProjectStore:
         _atomic_write(self.manifest_path, payload)
         return payload
 
+    @serialized
     def begin(self, *, job_id: str, kind: str, config: Dict[str, Any], dub_id: str = "", name: str = "", retry: bool = False) -> dict:
         now = _now()
         old = self.load()
@@ -217,6 +242,7 @@ class ProjectStore:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         return payload
 
+    @serialized
     def update_stage(
         self,
         *,
@@ -238,6 +264,7 @@ class ProjectStore:
                 dub["updated_at"] = payload["updated_at"]
         _atomic_write(self.manifest_path, payload)
 
+    @serialized
     def publish_artifact(self, kind: str, path: str, *, dub_id: str = "", version_id: str = "", language: str = "en") -> None:
         payload = self.load()
         if not payload:
@@ -267,6 +294,7 @@ class ProjectStore:
         payload["updated_at"] = _now()
         _atomic_write(self.manifest_path, payload)
 
+    @serialized
     def invalidate_shared_source(self) -> None:
         """Hide obsolete shared analysis when the video at an existing path changes."""
         payload = self.load()
@@ -304,6 +332,7 @@ class ProjectStore:
             fingerprints[kind] = digest
             payload["analysis_revision"] = int(payload.get("analysis_revision") or 0) + 1
 
+    @serialized
     def record_shared_analysis(self, kind: str, path: str) -> None:
         payload = self.load()
         if not payload:
@@ -312,6 +341,7 @@ class ProjectStore:
         payload["updated_at"] = _now()
         _atomic_write(self.manifest_path, payload)
 
+    @serialized
     def set_duration(self, dub_id: str, seconds: float) -> None:
         payload = self.load()
         for dub in payload.get("dubs", []):
@@ -321,6 +351,7 @@ class ProjectStore:
                 _atomic_write(self.manifest_path, payload)
                 return
 
+    @serialized
     def append_log(self, message: str) -> None:
         text = str(message).replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
         if not text:
@@ -331,6 +362,7 @@ class ProjectStore:
             for line in text.splitlines() or [text]:
                 handle.write(f"{stamp} {line}\n")
 
+    @serialized
     def add_warning(self, message: str, dub_id: str = "") -> None:
         payload = self.load()
         if not payload:
@@ -344,6 +376,7 @@ class ProjectStore:
         payload["updated_at"] = _now()
         _atomic_write(self.manifest_path, payload)
 
+    @serialized
     def finish(
         self,
         *,
@@ -383,6 +416,7 @@ class ProjectStore:
             payload["runs"] = runs[-20:]
         _atomic_write(self.manifest_path, payload)
 
+    @serialized
     def delete_dub(self, dub_id: str) -> dict:
         payload = self.load()
         dub = next((d for d in payload.get("dubs", []) if d.get("id") == dub_id), None)
@@ -418,6 +452,7 @@ class ProjectStore:
         _atomic_write(self.manifest_path, payload)
         return payload
 
+    @serialized
     def delete_project(self) -> dict:
         """Remove this project's generated data without touching its source or other projects."""
         if not self.project_id or Path(self.project_id).name != self.project_id or self.project_id in {".", ".."}:

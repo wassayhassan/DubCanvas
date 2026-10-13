@@ -61,12 +61,15 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--tts",
             choices=["auto", "chatterbox", "kokoro", "macos", "piper", "elevenlabs"],
-            default="auto",
-            help="auto prefers Chatterbox, then Kokoro, then platform fallbacks.",
+            default="kokoro",
+            help="Kokoro preset voices by default; auto prefers Kokoro, then Chatterbox and platform fallbacks.",
         )
         p.add_argument("--voice", default="")
         p.add_argument("--chatterbox-reference", default="", help="Optional voice reference clip you have permission to use")
-        p.add_argument("--no-auto-source-voices", action="store_true", help="Do not choose source dialogue as character voice references")
+        source_voices = p.add_mutually_exclusive_group()
+        source_voices.add_argument("--auto-source-voices", action="store_true", help="Opt in to source voice cloning with Chatterbox")
+        source_voices.add_argument("--no-auto-source-voices", action="store_false", dest="auto_source_voices", help="Disable source voice cloning (the default)")
+        p.set_defaults(auto_source_voices=False)
         p.add_argument("--chatterbox-expressiveness", type=float, default=0.5)
         p.add_argument("--chatterbox-device", choices=["auto", "mps", "cuda", "cpu"], default="auto")
         p.add_argument("--chatterbox-standard", action="store_true", help="Use standard Chatterbox instead of Turbo")
@@ -167,7 +170,7 @@ def _payload(args: argparse.Namespace) -> Dict[str, Any]:
             "provider": args.tts,
             "fallback_voice": args.voice,
             "chatterbox_reference_audio": args.chatterbox_reference,
-            "auto_voice_references": not args.no_auto_source_voices,
+            "auto_voice_references": args.auto_source_voices,
             "chatterbox_expressiveness": args.chatterbox_expressiveness,
             "chatterbox_device": args.chatterbox_device,
             "chatterbox_turbo": not args.chatterbox_standard,
@@ -191,7 +194,7 @@ def _payload(args: argparse.Namespace) -> Dict[str, Any]:
         "dub_volume": args.dub_volume,
         "elevenlabs_api_key": args.elevenlabs_api_key,
         "chatterbox_reference_audio": args.chatterbox_reference,
-        "auto_voice_references": not args.no_auto_source_voices,
+        "auto_voice_references": args.auto_source_voices,
         "chatterbox_expressiveness": args.chatterbox_expressiveness,
         "chatterbox_device": args.chatterbox_device,
         "chatterbox_turbo": not args.chatterbox_standard,
