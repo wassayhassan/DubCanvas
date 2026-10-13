@@ -24,7 +24,7 @@ from anime_dubber.core import CommandRunner, Segment, Config, _chatterbox_refere
 
 class CharacterLogicTests(unittest.TestCase):
     def test_reference_priority_and_opt_out(self):
-        config = Config(source="video", output_dir=Path("."), chatterbox_reference_audio="")
+        config = Config(source="video", output_dir=Path("."), chatterbox_reference_audio="", auto_voice_references=True)
         profile = {"suggested_reference_audio": "/auto/character.wav", "auto_reference_enabled": True}
         self.assertEqual(_chatterbox_reference(profile, config), "/auto/character.wav")
         profile["reference_audio"] = "/chosen.wav"

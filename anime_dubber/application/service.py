@@ -34,6 +34,7 @@ from ..core import (
 )
 from ..languages import TARGET_LANGUAGES
 from .events import AppEvent, progress_to_event
+from .project_lock import folder_lock, process_alive
 from .jobs import JobRecord
 from .diagnostics import DiagnosticLog, capture_model_output
 from .project import ProjectStore, get_project as load_project, list_projects as list_project_manifests
@@ -98,7 +99,7 @@ def config_from_dict(payload: Dict[str, Any]) -> Config:
     elif translation_provider in {"whisper_direct", "whisper_translate"}:
         translation_provider = "whisper"
 
-    tts_provider = str(tts.get("provider") or data.get("tts_engine") or "auto")
+    tts_provider = str(tts.get("provider") or data.get("tts_engine") or "kokoro")
     if tts_provider == "macos_say":
         tts_provider = "macos"
 
@@ -137,7 +138,7 @@ def config_from_dict(payload: Dict[str, Any]) -> Config:
         chatterbox_reference_audio=str(
             tts.get("chatterbox_reference_audio", data.get("chatterbox_reference_audio", "")) or ""
         ),
-        auto_voice_references=bool(tts.get("auto_voice_references", data.get("auto_voice_references", True))),
+        auto_voice_references=bool(tts.get("auto_voice_references", data.get("auto_voice_references", False))),
         chatterbox_expressiveness=float(
             tts.get("chatterbox_expressiveness", data.get("chatterbox_expressiveness", 0.5))
         ),
@@ -387,15 +388,12 @@ class ApplicationService:
         if project.get("status") != "running":
             return
         pid = project.get("active_pid")
-        if not pid or pid == os.getpid():
+        if not pid:
             return
-        try:
-            os.kill(int(pid), 0)
-        except (ProcessLookupError, ValueError):
-            return
-        except PermissionError:
-            pass
-        raise ValueError("Another process is processing this project")
+        if pid == os.getpid():
+            raise ValueError("An active job is already running for this project in another backend instance")
+        if process_alive(pid):
+            raise ValueError("Another process is processing this project")
 
     def start_job(self, payload: Dict[str, Any], *, analysis: bool = False) -> str:
         config = config_from_dict(payload)
@@ -417,7 +415,7 @@ class ApplicationService:
             config=self._normalized_config_dict(config),
         )
         record.runner = CommandRunner()
-        with self._lock:
+        with self._lock, folder_lock(store.output_dir):
             self._check_external_job(store.load())
             if any(s.project_id == store.project_id and s.output_dir == store.output_dir
                    and self._jobs[j].status in {"queued", "running"}
@@ -454,7 +452,7 @@ class ApplicationService:
             kind="analyze" if analysis else "run",
             config=self._normalized_config_dict(config),
         )
-        with self._lock:
+        with self._lock, folder_lock(store.output_dir):
             self._check_external_job(store.load())
             if any(s.project_id == store.project_id and s.output_dir == store.output_dir
                    and self._jobs[j].status in {"queued", "running"}
@@ -503,7 +501,7 @@ class ApplicationService:
         job_id = "job_" + uuid.uuid4().hex[:12]
         record = JobRecord(id=job_id, kind="run", config=self._normalized_config_dict(config))
         record.runner = CommandRunner()
-        with self._lock:
+        with self._lock, folder_lock(store.output_dir):
             if any(s.project_id == project_id and s.output_dir == store.output_dir
                    and self._jobs[j].status in {"queued", "running"}
                    for j, s in self._project_stores.items()):
@@ -743,15 +741,8 @@ class ApplicationService:
             if job_id in self._jobs and self._jobs[job_id].status in {"queued", "running"}:
                 return False
         pid = project.get("active_pid")
-        if pid:
-            try:
-                os.kill(int(pid), 0)
-            except (ProcessLookupError, ValueError):
-                pass
-            except PermissionError:
-                return False
-            else:
-                return False
+        if pid and process_alive(pid):
+            return False
         store = ProjectStore(output_dir, str(project.get("source") or ""))
         if store.project_id != project.get("project_id"):
             return False
@@ -935,10 +926,10 @@ class ApplicationService:
 
         if provider in {"", "inherit", "auto"}:
             from ..providers.tts import chatterbox_available, kokoro_available
-            if chatterbox_available():
-                provider = "chatterbox"
-            elif kokoro_available():
+            if kokoro_available():
                 provider = "kokoro"
+            elif chatterbox_available():
+                provider = "chatterbox"
             elif platform.system() == "Darwin" and shutil.which("say"):
                 provider = "macos"
             else:

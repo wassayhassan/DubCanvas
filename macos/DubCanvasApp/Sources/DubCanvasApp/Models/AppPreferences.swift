@@ -15,11 +15,12 @@ struct AppPreferences: Codable, Equatable {
     var ollamaURL = "http://127.0.0.1:11434"
     var ollamaModel = "qwen3:4b"
 
-    var voiceProvider = VoiceProvider.auto.rawValue
+    var voiceProvider = VoiceProvider.kokoro.rawValue
     var fallbackVoice = ""
     var ttsRate = 210
     var chatterboxReferenceAudio = ""
-    var autoSourceVoices: Bool? = true
+    var autoSourceVoices: Bool? = false
+    var voiceDefaultsRevision: Int? = 1
     var chatterboxExpressiveness = 0.5
     var chatterboxDevice = "auto"
     var chatterboxTurbo = true
@@ -44,7 +45,9 @@ struct AppPreferences: Codable, Equatable {
     static func load() -> AppPreferences {
         if let data = UserDefaults.standard.data(forKey: defaultsKey),
            let decoded = try? JSONDecoder().decode(AppPreferences.self, from: data) {
-            return decoded
+            let migrated = decoded.migratingVoiceDefaults()
+            migrated.save()
+            return migrated
         }
 
         if let oldData = UserDefaults.standard.data(forKey: "AnimeDubberPreferences.v2"),
@@ -56,12 +59,13 @@ struct AppPreferences: Codable, Equatable {
                 migrated.llmModel = "mlx-community/Qwen3-8B-4bit"
             }
             migrated.reviewBeforeDub = true
+            migrated = migrated.migratingVoiceDefaults()
             migrated.save()
             return migrated
         }
 
         // Migrate the older v1 preferences without failing when new voice fields
-        // did not exist yet. New voice defaults use Automatic / Best Local.
+        // did not exist yet. New voice defaults use Kokoro presets without cloning.
         if let oldData = UserDefaults.standard.data(forKey: "AnimeDubberPreferences.v1"),
            let object = try? JSONSerialization.jsonObject(with: oldData) as? [String: Any] {
             var migrated = AppPreferences()
@@ -70,7 +74,7 @@ struct AppPreferences: Codable, Equatable {
             migrated.outputMode = object["outputMode"] as? String ?? migrated.outputMode
             migrated.asrProvider = object["asrProvider"] as? String ?? migrated.asrProvider
             migrated.translationProvider = object["translationProvider"] as? String ?? migrated.translationProvider
-            migrated.voiceProvider = VoiceProvider.auto.rawValue
+            migrated.voiceProvider = VoiceProvider.kokoro.rawValue
             migrated.fallbackVoice = object["fallbackVoice"] as? String ?? ""
             migrated.ttsRate = object["ttsRate"] as? Int ?? migrated.ttsRate
             migrated.detectCharacters = object["detectCharacters"] as? Bool ?? migrated.detectCharacters
@@ -81,6 +85,18 @@ struct AppPreferences: Codable, Equatable {
         }
 
         return AppPreferences()
+    }
+
+    func migratingVoiceDefaults() -> AppPreferences {
+        var result = self
+        if result.voiceDefaultsRevision == nil {
+            if result.voiceProvider == VoiceProvider.auto.rawValue {
+                result.voiceProvider = VoiceProvider.kokoro.rawValue
+                result.autoSourceVoices = false
+            }
+            result.voiceDefaultsRevision = 1
+        }
+        return result
     }
 
     func save() {

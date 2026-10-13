@@ -143,10 +143,10 @@ class Config:
     llm_model: str = LLM_MODEL
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:4b"
-    tts_engine: str = "auto"  # auto|chatterbox|kokoro|macos|piper|elevenlabs
+    tts_engine: str = "kokoro"  # auto|chatterbox|kokoro|macos|piper|elevenlabs
     voice: str = ""
     chatterbox_reference_audio: str = ""
-    auto_voice_references: bool = True
+    auto_voice_references: bool = False
     chatterbox_expressiveness: float = 0.5
     chatterbox_device: str = "auto"  # auto|mps|cuda|cpu
     chatterbox_turbo: bool = True
@@ -1597,10 +1597,10 @@ def prepare_tts_clip(
     if resolved_tts == "auto":
         from .providers.tts import chatterbox_available, kokoro_available, piper_available
 
-        if chatterbox_available():
-            resolved_tts = "chatterbox"
-        elif kokoro_available():
+        if kokoro_available():
             resolved_tts = "kokoro"
+        elif chatterbox_available():
+            resolved_tts = "chatterbox"
         elif platform.system() == "Darwin" and shutil.which("say"):
             resolved_tts = "macos"
         else:

@@ -195,7 +195,7 @@ class FfmpegPipelineTests(unittest.TestCase):
                 "-ac", "1", "-ar", "44100", str(raw),
             ], check=True)
             cfg = Config(source="x", output_dir=d, tts_engine="chatterbox", multi_character=True,
-                         chatterbox_reference_audio="/global-female.wav")
+                         chatterbox_reference_audio="/global-female.wav", auto_voice_references=True)
             seg = Segment(0, 1, "你好", "Hello", speaker_id="CHAR_001")
             reference = d / "character.wav"
             subprocess.run([

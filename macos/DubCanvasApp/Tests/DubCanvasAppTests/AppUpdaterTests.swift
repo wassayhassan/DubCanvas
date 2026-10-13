@@ -5,6 +5,15 @@ import XCTest
 
 final class AppUpdaterTests: XCTestCase {
     private let revision = String(repeating: "a", count: 40)
+    func testPreparationCommandTimeoutIsLogged() throws {
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: log) }
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        XCTAssertThrowsError(try AppUpdater.run("/bin/sleep", ["30"], logURL: log, timeout: 0.05)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("timed out"))
+        }
+        XCTAssertTrue(try String(contentsOf: log).contains("[error]"))
+    }
     @MainActor func testRestartWaitsForUpdateWindowDismissalAndShutsDownBeforeQuit() async {
         var actions: [String] = []
         AppUpdater.finishRestart(shutdown: { actions.append("shutdown") }, terminate: { actions.append("quit") })
