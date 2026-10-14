@@ -40,6 +40,7 @@ final class ManagedSetup: ObservableObject {
 
     func start(quality: Bool, token: String) {
         guard !busy else { return }
+        guard !AppUpdater.shared.busy else { error = "Wait for the app update to finish before starting setup."; return }
         guard !AppState.hasRunningJobs else { error = "Finish or pause running jobs before setup."; return }
         if quality && token.isEmpty {
             error = "Accept the speaker model conditions and enter your Hugging Face read token before starting quality setup."; return
@@ -59,10 +60,12 @@ final class ManagedSetup: ObservableObject {
             FileManager.default.createFile(atPath: url.path, contents: nil)
             logURL = url; logHandle = try FileHandle(forWritingTo: url)
             let task = Process(), pipe = Pipe()
-            task.executableURL = uv
-            task.arguments = ["run", "--no-project", "--managed-python", "--python", "3.13", "python",
+            task.executableURL = URL(fileURLWithPath: "/bin/sh")
+            task.arguments = [resources.appendingPathComponent("managed_setup_launch.sh").path,
+                              String(ProcessInfo.processInfo.processIdentifier), uv.path, "run", "--no-project", "--managed-python", "--python", "3.13", "python",
                               backend.appendingPathComponent("tools/managed_setup.py").path,
-                              "--directory", Self.directory.path, "--uv", uv.path] + (quality ? ["--quality"] : [])
+                              "--directory", Self.directory.path, "--uv", uv.path,
+                              "--parent-pid", String(ProcessInfo.processInfo.processIdentifier)] + (quality ? ["--quality"] : [])
             task.currentDirectoryURL = backend
             var environment = ProcessInfo.processInfo.environment
             environment["UV_PYTHON_INSTALL_DIR"] = Self.directory.appendingPathComponent("python").path

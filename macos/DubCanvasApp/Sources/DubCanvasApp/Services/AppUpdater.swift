@@ -99,6 +99,7 @@ final class AppUpdater: ObservableObject {
                 try Self.prepare(archive: archive, work: directory, staged: destination, current: target, manifest: manifest, logURL: logURL)
             }.value
             guard !AppState.hasRunningJobs else { throw UpdateFailure("A job started while the update was downloading. Pause it and try again.") }
+            guard !ManagedSetup.shared.busy else { throw UpdateFailure("App setup started while preparing the update. Wait for setup to finish.") }
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
             process.arguments = [helper.path, String(ProcessInfo.processInfo.processIdentifier), target.path, destination.path, logURL.path]

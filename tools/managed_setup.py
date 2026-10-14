@@ -9,6 +9,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
+import time
 import urllib.request
 import zipfile
 
@@ -38,9 +40,22 @@ def run(command, *, env=None, timeout=7200):
         _child = None
 
 def interrupted(signum, frame):
+    # The supervisor and parent monitor can signal together. Do not let a
+    # second signal interrupt the bounded worker cleanup in run().
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     if _child is not None and _child.poll() is None:
         os.killpg(_child.pid, signal.SIGTERM)
     raise KeyboardInterrupt
+
+def monitor_parent(pid):
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+        time.sleep(1)
 
 def digest_file(path, algorithm="sha256"):
     h = hashlib.new(algorithm)
@@ -183,8 +198,13 @@ def main():
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--uv', type=Path, required=True)
     parser.add_argument('--quality', action='store_true')
+    parser.add_argument('--parent-pid', type=int)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    if args.parent_pid is not None:
+        if args.parent_pid <= 1: parser.error("Invalid parent process")
+        threading.Thread(target=monitor_parent, args=(args.parent_pid,), daemon=True).start()
     root = args.directory.expanduser().resolve(); root.mkdir(parents=True, exist_ok=True)
     with (root / 'setup.lock').open('w') as lock:
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

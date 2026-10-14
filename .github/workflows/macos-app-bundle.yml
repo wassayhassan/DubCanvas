@@ -39,6 +39,8 @@ jobs:
           test -f dist/DubCanvas.app/Contents/Resources/backend/dubcanvas/__main__.py
           test -f dist/DubCanvas.app/Contents/Resources/backend/tools/install_quality.py
           test -f dist/DubCanvas.app/Contents/Resources/backend/tools/managed_setup.py
+          test -f dist/DubCanvas.app/Contents/Resources/managed_setup_launch.sh
+          /bin/sh -n dist/DubCanvas.app/Contents/Resources/managed_setup_launch.sh
           test -x dist/DubCanvas.app/Contents/Resources/tools/uv
           test -x dist/DubCanvas.app/Contents/Resources/tools/ffmpeg
           test -x dist/DubCanvas.app/Contents/Resources/tools/rubberband
@@ -58,7 +60,7 @@ jobs:
           export ESPEAK_DATA_PATH="$PWD/dist/DubCanvas.app/Contents/Resources/tools/share/espeak-ng-data"
           export PYTHONPATH="$PWD/dist/DubCanvas.app/Contents/Resources/backend"
           export PATH="$PWD/dist/DubCanvas.app/Contents/Resources/tools:/usr/bin:/bin:/usr/sbin:/sbin"
-          uv run --no-project --managed-python --python 3.13 python dist/DubCanvas.app/Contents/Resources/backend/tools/managed_setup.py --directory "$RUNNER_TEMP/managed-runtime" --uv "$PWD/dist/DubCanvas.app/Contents/Resources/tools/uv"
+          /bin/sh dist/DubCanvas.app/Contents/Resources/managed_setup_launch.sh "$$" "$PWD/dist/DubCanvas.app/Contents/Resources/tools/uv" run --no-project --managed-python --python 3.13 python dist/DubCanvas.app/Contents/Resources/backend/tools/managed_setup.py --directory "$RUNNER_TEMP/managed-runtime" --uv "$PWD/dist/DubCanvas.app/Contents/Resources/tools/uv" --parent-pid "$$"
           test -f "$RUNNER_TEMP/managed-runtime/core-ready.json"
           "$RUNNER_TEMP/managed-runtime/core/bin/python" -c 'import kokoro, yt_dlp, anime_dubber.application'
           "$RUNNER_TEMP/managed-runtime/core/bin/python" - <<'PYCODE'

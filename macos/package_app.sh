@@ -147,6 +147,7 @@ ditto "$ROOT/docs" "$BACKEND/docs"
 cp "$ROOT/constraints.txt" "$BACKEND/constraints.txt"
 cp "$ROOT/verify_source.py" "$BACKEND/verify_source.py"
 cp "$ROOT/macos/install_update.sh" "$RESOURCES/install_update.sh"
+cp "$ROOT/macos/managed_setup_launch.sh" "$RESOURCES/managed_setup_launch.sh"
 find "$BACKEND" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 find "$BACKEND" -name '*.pyc' -delete 2>/dev/null || true
 
