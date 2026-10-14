@@ -329,6 +329,10 @@ class QualityEndToEndTests(unittest.TestCase):
             self.assertEqual(legacy_map.read_bytes(), legacy_bytes)
             self.assertLess(published.index("translated_srt"), published.index("dubbed_video"))
             self.assertIn("Hello", result["translated_srt"].read_text())
+            from anime_dubber.review import read_srt
+            delivered = read_srt(result["translated_srt"])[0]
+            # Fixture speech trims to .73 s; original Chinese cue was 1 s.
+            self.assertAlmostEqual(delivered["end"] - delivered["start"], .73, places=2)
             manifest = list((root / "out").rglob("run-manifest.json"))[0]
             self.assertTrue(json.loads(manifest.read_text())["complete"])
             self.assertFalse(json.loads(manifest.read_text())["hardware_verified"])

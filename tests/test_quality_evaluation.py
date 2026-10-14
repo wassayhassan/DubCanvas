@@ -27,7 +27,7 @@ class QualityEvaluationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly"):
                 verify_translation_adapter(root, checksum)
             (root / "config.json").write_text(json.dumps({"model_file": "hy_v3.py"}))
-            self.assertEqual(verify_translation_adapter(root, checksum), root)
+            self.assertEqual(verify_translation_adapter(root, checksum), root.resolve())
     def test_failed_clip_keeps_artifacts_and_other_clips_run(self):
         class Service:
             def __init__(self, event_sink): self.sink = event_sink

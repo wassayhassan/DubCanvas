@@ -664,6 +664,11 @@ def run_quality(config, progress, runner, *, analysis=False):
     fitted_takes = [{**take, "path": clip, "identity": {**take["identity"], "fitted_sha256": file_digest(clip)}}
                    for take, clip in zip(takes, clips)]
     speech_qa(fitted_takes, q, version_cp, runner, progress)
+    # English captions follow the measured fitted speech, including borrowed
+    # silence. Keep original Chinese/source windows intact for the background.
+    from dataclasses import replace
+    timeline_segments = [replace(seg, end=min(duration, seg.start + length))
+                         for seg, length in zip(timeline_segments, rendered)]
     # Keep source replacement windows at their original positions while placing
     # English at accepted visual hints. Only the English subtitle timing changes.
     master = mix(audio, stems, timeline_segments, clips, duration, work, config, q, runner, progress,

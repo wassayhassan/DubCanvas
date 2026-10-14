@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import sys
 import time
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from anime_dubber.core import CommandRunner, _atomic_json_write
@@ -66,7 +67,7 @@ def probe(manifest, settings, output, worker_factory=Worker):
               "hardware_performance_verified": False, "quality_verified": False,
               "note": "Successful requests establish execution and output structure, not accuracy or perceptual quality."}
     for i, row in enumerate(requests):
-        log = DiagnosticLog(output / "logs", f"probe_{i:03}_{row['role']}", {})
+        log = DiagnosticLog(output / "logs", f"probe_{i:03}_{row['role']}_{uuid.uuid4().hex[:12]}", {})
         runner = CommandRunner()
         runner.diagnostic = lambda message, **details: log.write(message, details=details)
         runner.progress = lambda message: log.write(message)
