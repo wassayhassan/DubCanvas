@@ -54,17 +54,23 @@ jobs:
 
       - name: Test managed first-install runtime without Homebrew Python
         run: |
+          BUNDLE_RESOURCES="$PWD/dist/DubCanvas.app/Contents/Resources"
+          export DUBCANVAS_BUNDLED_BACKEND="$BUNDLE_RESOURCES/backend"
           export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/managed-runtime/python"
           export UV_CACHE_DIR="$RUNNER_TEMP/managed-runtime/cache"
-          export PHONEMIZER_ESPEAK_LIBRARY="$PWD/dist/DubCanvas.app/Contents/Resources/tools/lib/libespeak-ng.1.dylib"
-          export ESPEAK_DATA_PATH="$PWD/dist/DubCanvas.app/Contents/Resources/tools/share/espeak-ng-data"
-          export PYTHONPATH="$PWD/dist/DubCanvas.app/Contents/Resources/backend"
-          export PATH="$PWD/dist/DubCanvas.app/Contents/Resources/tools:/usr/bin:/bin:/usr/sbin:/sbin"
-          /bin/sh dist/DubCanvas.app/Contents/Resources/managed_setup_launch.sh "$$" "$PWD/dist/DubCanvas.app/Contents/Resources/tools/uv" run --no-project --managed-python --python 3.13 python dist/DubCanvas.app/Contents/Resources/backend/tools/managed_setup.py --directory "$RUNNER_TEMP/managed-runtime" --uv "$PWD/dist/DubCanvas.app/Contents/Resources/tools/uv" --parent-pid "$$"
+          export PYTHONDONTWRITEBYTECODE=1
+          export PHONEMIZER_ESPEAK_LIBRARY="$BUNDLE_RESOURCES/tools/lib/libespeak-ng.1.dylib"
+          export ESPEAK_DATA_PATH="$BUNDLE_RESOURCES/tools/share/espeak-ng-data"
+          export PYTHONPATH="$DUBCANVAS_BUNDLED_BACKEND"
+          export PATH="$BUNDLE_RESOURCES/tools:/usr/bin:/bin:/usr/sbin:/sbin"
+          cd "$DUBCANVAS_BUNDLED_BACKEND"
+          /bin/sh "$BUNDLE_RESOURCES/managed_setup_launch.sh" "$$" "$BUNDLE_RESOURCES/tools/uv" run --no-project --managed-python --python 3.13 python tools/managed_setup.py --directory "$RUNNER_TEMP/managed-runtime" --uv "$BUNDLE_RESOURCES/tools/uv" --parent-pid "$$"
           test -f "$RUNNER_TEMP/managed-runtime/core-ready.json"
-          "$RUNNER_TEMP/managed-runtime/core/bin/python" -c 'import kokoro, yt_dlp, anime_dubber.application'
           "$RUNNER_TEMP/managed-runtime/core/bin/python" - <<'PYCODE'
           import ctypes, os
+          from pathlib import Path
+          import kokoro, yt_dlp, anime_dubber.application
+          assert Path(anime_dubber.application.__file__).resolve().is_relative_to(Path(os.environ['DUBCANVAS_BUNDLED_BACKEND']).resolve())
           library = ctypes.CDLL(os.environ['PHONEMIZER_ESPEAK_LIBRARY'])
           library.espeak_Initialize.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
           assert library.espeak_Initialize(2, 0, os.environ['ESPEAK_DATA_PATH'].encode(), 0) > 0
@@ -72,6 +78,9 @@ jobs:
 
       - name: Test update verification and staging
         run: swift test --package-path macos/DubCanvasApp
+
+      - name: Verify signed bundle after all runtime tests
+        run: codesign --verify --deep --strict dist/DubCanvas.app
 
       - uses: actions/upload-artifact@v4
         with:

@@ -66,6 +66,7 @@ class Worker:
             if not interpreter or not Path(interpreter).is_file():
                 raise PipelineError(f"Configure isolated Python for {self.role}")
             env = dict(os.environ)
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
             env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
             env["PYANNOTE_METRICS_ENABLED"] = "0"
             self.proc = subprocess.Popen([interpreter, "-u", "-m", "anime_dubber.quality_worker", self.role],

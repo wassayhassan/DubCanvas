@@ -18,6 +18,7 @@ MSST_REVISION = '84b1eac0887756b4f1a9d7a1ff49105939749ed2'
 CHECKPOINT_SHA256 = 'abcfccf65446752a057f4a302c941479a54b7560ebf8d7bca039d2ea98e64cfc'
 CHECKPOINT_MD5 = 'fea2868787551b0cff36cfcf7c3622a3'
 ROOT = Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT))
 _child = None
 
@@ -128,7 +129,7 @@ def install_env(uv, directory, version, requirements, env, extra=()):
 
 def provision(root, uv, quality=False):
     root.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, UV_PYTHON_INSTALL_DIR=str(root / 'python'), UV_CACHE_DIR=str(root / 'cache'), PYTHONUNBUFFERED='1', PYTHONPATH=str(ROOT))
+    env = dict(os.environ, UV_PYTHON_INSTALL_DIR=str(root / 'python'), UV_CACHE_DIR=str(root / 'cache'), PYTHONUNBUFFERED='1', PYTHONDONTWRITEBYTECODE='1', PYTHONPATH=str(ROOT))
     progress('Installing the app runtime')
     core = root / 'core/bin/python'
     marker = root / 'core-ready.json'

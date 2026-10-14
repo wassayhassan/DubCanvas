@@ -27,6 +27,7 @@ def main():
         print("Main advanced; the newer build will publish its update")
         return
     root = Path(__file__).resolve().parent.parent
+    run("/usr/bin/codesign", "--verify", "--deep", "--strict", str(root / "dist/DubCanvas.app"))
     archive = root / "dist" / f"DubCanvas-update-{sha}.zip"
     run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(root / "dist/DubCanvas.app"), str(archive))
     manifest = root / "dist/latest-update.json"

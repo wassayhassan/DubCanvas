@@ -64,6 +64,7 @@ final class BackendProcess {
 
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONUNBUFFERED"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         environment["PYTHONPATH"] = backendRoot.path
         if let token = KeychainStore.string(for: "huggingface-token"), !token.isEmpty { environment["HF_TOKEN"] = token }
 

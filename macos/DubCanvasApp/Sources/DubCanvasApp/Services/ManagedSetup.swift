@@ -71,6 +71,7 @@ final class ManagedSetup: ObservableObject {
             environment["UV_PYTHON_INSTALL_DIR"] = Self.directory.appendingPathComponent("python").path
             environment["UV_CACHE_DIR"] = Self.directory.appendingPathComponent("cache").path
             environment["PYTHONUNBUFFERED"] = "1"
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
             environment["PATH"] = resources.appendingPathComponent("tools").path + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
             if !token.isEmpty { environment["HF_TOKEN"] = token }
             task.environment = environment
