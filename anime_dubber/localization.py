@@ -239,11 +239,15 @@ def localize(segments, config, q, checkpoints, glossary, runner, progress, parti
             for i, row, violations in failing:
                 seg = segments[i]
                 problem = json.dumps({"errors": row["errors"], "glossary_violations": violations}, ensure_ascii=False)
-                text = translator.call({"prompt": translate_prompt(seg.text,
-                    episode_context(q, glossary, seg.text, scene_context(source_rows, i, config.context)), glossary.relevant(seg.text),
-                    target_name(config.target_language), problem)})["text"].strip().strip('"')
-                if not translation_is_usable(seg.text, text, "zh", config.target_language):
-                    raise PipelineError(f"Invalid repair at cue {i + 1}; completed work saved")
+                for attempt in range(3):
+                    text = translator.call({"prompt": translate_prompt(seg.text,
+                        episode_context(q, glossary, seg.text, scene_context(source_rows, i, config.context)), glossary.relevant(seg.text),
+                        target_name(config.target_language), problem + ("\nPrevious repair was incomplete; translate every word." if attempt else ""))})["text"].strip().strip('"')
+                    if translation_is_usable(seg.text, text, "zh", config.target_language):
+                        break
+                else:
+                    partial_callback()
+                    raise PipelineError(f"Automatic translation repair exhausted at cue {i + 1}; completed work saved")
                 seg.translated = text
                 checkpoints.put("translation", translations[i], {"text": text})
                 partial_callback()

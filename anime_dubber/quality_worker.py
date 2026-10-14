@@ -122,7 +122,8 @@ def execute(role, request, q):
         return result
     if role == "fallback":
         return primitive(model.transcribe(request["audio"], path_or_hf_repo=q["models"]["fallback"]["repo"],
-                                          language="zh", task="transcribe", word_timestamps=True))
+                                          language="en" if request.get("language") == "English" else "zh",
+                                          task="transcribe", word_timestamps=True))
     if role == "aligner":
         return primitive(model.generate(request["audio"], text=request["text"], language=request["language"]))
     if role == "diarizer":

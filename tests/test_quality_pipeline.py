@@ -279,6 +279,7 @@ class WorkerTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
 class QualityEndToEndTests(unittest.TestCase):
     def test_real_media_pipeline_with_contract_model_fixtures(self):
+        speech_seconds = .75
         # Real decoding/timing/mixing/muxing. Model outputs are fixtures, NOT model quality evidence.
         import numpy as np
         import soundfile as sf
@@ -298,11 +299,11 @@ class QualityEndToEndTests(unittest.TestCase):
                     return {"text": "Hello" if r.get("language") == "English" else "你好"}
                 if self.role == "aligner":
                     return {"items": [{"text": r["text"], "start_time": .05 if r["language"] == "English" else .5,
-                        "end_time": .65 if r["language"] == "English" else 1.5}]}
+                        "end_time": speech_seconds - .1 if r["language"] == "English" else 1.5}]}
                 if self.role == "translator": return {"text": "Hello"}
                 if self.role == "reviewer": return {"text": '{"passed":true,"errors":[],"terms":[]}'}
                 if self.role == "tts":
-                    t = np.arange(36000) / 48000
+                    t = np.arange(int(speech_seconds * 48000)) / 48000
                     sf.write(r["output"], .2 * np.sin(2 * np.pi * 440 * t), 48000, subtype="FLOAT")
                     return {"output": r["output"]}
                 raise AssertionError(self.role)
@@ -332,7 +333,13 @@ class QualityEndToEndTests(unittest.TestCase):
             from anime_dubber.review import read_srt
             delivered = read_srt(result["translated_srt"])[0]
             # Fixture speech trims to .73 s; original Chinese cue was 1 s.
-            self.assertAlmostEqual(delivered["end"] - delivered["start"], .73, places=2)
+            self.assertAlmostEqual(delivered["end"] - delivered["start"], speech_seconds - .02, places=2)
+            def video_packets(path):
+                cp = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_packets",
+                    "-show_data_hash", "sha256", "-show_entries", "packet=pts,dts,duration,data_hash", "-of", "json", str(path)],
+                    check=True, capture_output=True, text=True)
+                return json.loads(cp.stdout)["packets"]
+            self.assertEqual(video_packets(video), video_packets(result["dubbed_video"]))
             manifest = list((root / "out").rglob("run-manifest.json"))[0]
             self.assertTrue(json.loads(manifest.read_text())["complete"])
             self.assertFalse(json.loads(manifest.read_text())["hardware_verified"])

@@ -98,3 +98,14 @@ Final continuation code revision: `0c34798a26deafd927d6a935820b6630c7b38eff`.
 - Local and published source trees were compared and matched exactly. Documentation-only evidence updates do not change the verified code.
 
 These software checks are complete. Model inference/quality, physical M5 Max 48 GB measurements, annotated-media/listening/soak, redistribution and credentialed cloud gates remain BLOCKED. PR remains experimental/draft; public update is not published.
+
+## Automatic recovery with the original video unchanged
+
+Latest user constraint: preserve the exact source-video duration and pacing. Video retiming/scene extension is excluded, not an unfinished requirement. No retiming implementation is included in this change.
+
+- Q08: invalid translation repairs receive automatic retries rather than failing on their first invalid output.
+- Q10/Q12: speech mismatches receive independent Whisper recognition; failed synthesis/takes are regenerated; Qwen failure can trigger a consistent per-character Kokoro fallback in the dub only. Completed takes and recovery budgets persist. Invalid word spans on otherwise content-verified speech fall back to whole-take timing.
+- Q11: tighter Qwen delivery is attempted automatically before further spoken rewrites. Last-resort speech rescue is default-on, with explicitly saved preferences respected. Video duration and pacing remain fixed; speech checks and scene/speaker constraints remain enforced. Irrecoverable failures save work and report the failed job rather than ask the user to review Chinese.
+- Q18: integration now compares source/final encoded video packet hashes and PTS/DTS/duration fields, verifying unchanged content and video timing. Recovery tests verify failed-cue retries, character-wide fallback without project-cast mutation, independent recognition and no repeated resource-failure loops.
+
+Local regression: 214 tests run successfully, 4 environment skips. The real-media fixture run/resume, video packet/timestamp identity check, source preflight, whitespace and isolated dependency checks pass. Updated native CI is pending. Real-model accuracy and M5 Max quality/performance gates remain unverified.

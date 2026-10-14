@@ -84,8 +84,8 @@ struct QualitySettingsView: View {
                     ForEach(["Aiden", "Ryan", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna", "Sohee"], id: \.self) { Text($0).tag($0) }
                 }
                 Toggle("Use Kokoro for identified female American roles", isOn: flag("american_female_fallback", default: true))
-                Toggle("Allow exceptional timing rescue up to 1.5×", isOn: flag("allow_rescue_speed"))
-                Text("Normal stretch ≤1.15×; shouts/whispers ≤1.10×. No fit saves subtitles and voices, then blocks rendering. Set each character's voice in Speakers.")
+                Toggle("Automatically test faster speech when other timing repairs fail", isOn: flag("allow_rescue_speed", default: true))
+                Text("Original video duration, frames and pacing are preserved. Translation repairs, speech verification, regeneration and character-wide voice fallback run automatically. Timing changes apply to the English audio and subtitles. Voice cloning remains optional.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("I permit selected cloud services to receive dialogue text", isOn: flag("allow_cloud"))
                 Picker("Meaning review", selection: string("review_provider", default: "local")) {

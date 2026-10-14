@@ -299,7 +299,7 @@ def cast(segments, config, q, path, runner):
     _publish(runner, "character_map", path, config.target_language)
     return profiles
 
-def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints, runner, progress):
+def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints, runner, progress, *, attempts=None, delivery_hints=None):
     from .core import _complete_wav, PipelineError, synthesize_elevenlabs
     directory = work / "dry_voices"
     directory.mkdir(parents=True, exist_ok=True)
@@ -323,10 +323,17 @@ def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints,
                 instruct = {"shouting": "Shout with strong emotion, preserve clear words, at natural speed.",
                             "whispering": "Whisper softly and intimately, clearly, at natural speed."}.get(seg.style,
                             "Natural expressive American English dialogue at normal speed. " + str(row.get("notes", "")))
+                generation_attempt = (attempts or {}).get(i, 0)
+                if (delivery_hints or {}).get(i):
+                    instruct += " " + delivery_hints[i]
+                if generation_attempt:
+                    instruct += " Pronounce every supplied word clearly. Do not omit, repeat or add words."
                 identity = {"text": voice_text, "cast": row, "style": instruct,
                     "model": q["models"]["tts"] if engine == "qwen" else engine,
                     "glossary": glossary.revision, "runtime_versions": checkpoints.environment,
                     "cloud_model": config.elevenlabs_model_id if engine == "elevenlabs" else None}
+                if generation_attempt:
+                    identity["generation_attempt"] = generation_attempt
                 if engine == "index_clone":
                     identity["clone_config_sha256"] = file_digest(q["clone_config"])
                     identity["clone_model_directory"] = q["clone_model_dir"]
@@ -339,9 +346,14 @@ def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints,
                     temp = path.with_suffix(".rendering.wav")
                     try:
                         if worker:
-                            worker.call({"text": voice_text, "speaker": row.get("qwen_speaker", q["qwen_speaker"]),
-                                "voice": row["kokoro_voice"], "instruct": instruct,
-                                "reference": row.get("reference_audio", ""), "output": str(temp)})
+                            try:
+                                worker.call({"text": voice_text, "speaker": row.get("qwen_speaker", q["qwen_speaker"]),
+                                    "voice": row["kokoro_voice"], "instruct": instruct,
+                                    "reference": row.get("reference_audio", ""), "output": str(temp)})
+                            except PipelineError as exc:
+                                if any(word in str(exc).lower() for word in ("deadline", "budget", "memory", "configure isolated")):
+                                    raise
+                                raise SpeechValidationFailure({i: f"voice generation failed: {exc}"}) from exc
                         else:
                             if not q["allow_cloud"]:
                                 raise PipelineError("Cloud speech upload is disabled")
@@ -354,7 +366,7 @@ def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints,
                             _cut_audio(mp3, temp, 0, 3600, runner, mono=False)
                             mp3.unlink(missing_ok=True)
                         if not _complete_wav(temp):
-                            raise PipelineError(f"Voice engine returned no valid audio at cue {i + 1}")
+                            raise SpeechValidationFailure({i: "voice engine returned no valid audio"})
                         temp.replace(path)
                     finally:
                         temp.unlink(missing_ok=True)
@@ -363,9 +375,57 @@ def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints,
                 progress(f"Generating dub voice: {i + 1}/{len(segments)} lines")
     return takes
 
+from .core import PipelineError
+
+class SpeechValidationFailure(PipelineError):
+    def __init__(self, failures):
+        self.failures = failures
+        super().__init__("Speech checks failed: " + "; ".join(f"cue {i + 1}: {reason}" for i, reason in failures.items()))
+
+def generate_checked_speech(segments, profiles, glossary, config, q, work, checkpoints, runner, progress, *, delivery_hints=None):
+    """Repair only failed cues, with fixed character voices and a durable retry budget."""
+    identity = {"segments": [s.to_dict() for s in segments], "cast": {sid: dict(row) for sid, row in profiles.items()},
+                "glossary": glossary.revision, "settings": q, "delivery_hints": delivery_hints or {}}
+    saved = checkpoints.get("speech_recovery", identity) or {}
+    attempts = {int(i): count for i, count in saved.get("attempts", {}).items()}
+    fallback_cast = saved.get("fallback_cast", {})
+    profiles.update(fallback_cast)
+    while True:
+        try:
+            takes = synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints, runner, progress,
+                                    attempts=attempts, delivery_hints=delivery_hints)
+            speech_qa(takes, q, checkpoints, runner, progress)
+            checkpoints.put("speech_recovery", identity, {"attempts": attempts, "validated": True, "fallback_cast": fallback_cast})
+            return takes
+        except SpeechValidationFailure as exc:
+            exhausted = [i for i in exc.failures if attempts.get(i, 0) >= 2]
+            if exhausted:
+                switch = {segments[i].speaker_id for i in exhausted
+                          if profiles.get(segments[i].speaker_id, {}).get("tts_provider") == "qwen"}
+                if switch:
+                    # Switch the entire character in this dub, never individual
+                    # lines or the shared project cast, to preserve consistency.
+                    for sid in switch:
+                        fallback_cast[sid] = {**profiles[sid], "tts_provider": "kokoro", "automatic_fallback_from": "qwen"}
+                        profiles[sid] = fallback_cast[sid]
+                    for i, seg in enumerate(segments):
+                        if seg.speaker_id in switch:
+                            attempts[i] = 0
+                    progress("Automatically using a consistent Kokoro preset for characters whose expressive voice failed word checks")
+                    checkpoints.put("speech_recovery", identity, {"attempts": attempts, "validated": False, "fallback_cast": fallback_cast})
+                    continue
+                checkpoints.put("speech_recovery", identity, {"attempts": attempts, "validated": False, "failures": exc.failures, "fallback_cast": fallback_cast})
+                raise PipelineError("Available voice engines could not produce valid speech at cues " + ", ".join(str(i + 1) for i in exhausted)
+                                    + "; subtitles and generated takes preserved") from exc
+            for i in exc.failures:
+                attempts[i] = attempts.get(i, 0) + 1
+                progress(f"Automatically regenerating cue {i + 1}, take {attempts[i] + 1}/3: {exc.failures[i]}")
+            checkpoints.put("speech_recovery", identity, {"attempts": attempts, "validated": False, "failures": exc.failures, "fallback_cast": fallback_cast})
+
 def speech_qa(takes, q, checkpoints, runner, progress):
     from .core import PipelineError
     _stage(runner, "speech_quality", "Checking generated words and pronunciation")
+    failures = {}
     with Worker("verifier", q, runner) as worker:
         for i, take in enumerate(takes):
             result = _cached_call(worker, checkpoints, "speech_content", {"take": take["identity"],
@@ -373,17 +433,46 @@ def speech_qa(takes, q, checkpoints, runner, progress):
                 {"audio": str(take["path"]), "language": "English"})
             error = speech_error(take["text"], result.get("text", ""))
             if error > q["qa_word_error_limit"] or not protected_speech_matches(take["text"], result.get("text", "")):
-                raise PipelineError(f"Generated speech mismatch at cue {i + 1}: expected {take['text']!r}, heard {result.get('text')!r}; no mix generated")
-            take["recognized"] = result["text"]
+                failures[i] = f"expected {take['text']!r}, heard {result.get('text')!r}"
+            take["recognized"] = result.get("text", "")
             progress(f"Speech quality: {i + 1}/{len(takes)} cues")
+    if failures:
+        # Recognition errors are not proof that a voice missed a word. Check
+        # disputed takes with a different acoustic model before regenerating.
+        with Worker("fallback", q, runner) as worker:
+            for i in list(failures):
+                take = takes[i]
+                result = _cached_call(worker, checkpoints, "speech_content_whisper", {"audio": file_digest(take["path"]),
+                    "text": take["text"], "model": q["models"]["fallback"]},
+                    {"audio": str(take["path"]), "language": "English"})
+                heard = result.get("text", "")
+                if speech_error(take["text"], heard) <= q["qa_word_error_limit"] and protected_speech_matches(take["text"], heard):
+                    take["recognized"] = heard
+                    failures.pop(i)
+                    progress(f"Automatically resolved speech-check disagreement at cue {i + 1} with independent recognition")
     with Worker("aligner", q, runner) as worker:
-        for take in takes:
+        for i, take in enumerate(takes):
+            if i in failures:
+                continue
             result = _cached_call(worker, checkpoints, "english_alignment", {"audio": file_digest(take["path"]),
                 "text": take["text"], "model": q["models"]["aligner"]},
                 {"audio": str(take["path"]), "text": take["text"], "language": "English"})
-            if not result.get("items"):
-                raise PipelineError("Generated English has no valid alignment")
+            items = result.get("items", [])
+            try:
+                if not items or any(not math.isfinite(float(x["start_time"])) or not math.isfinite(float(x["end_time"]))
+                    or float(x["start_time"]) < 0 or float(x["end_time"]) <= float(x["start_time"]) for x in items):
+                    raise ValueError("missing or invalid alignment")
+            except (ValueError, TypeError, KeyError):
+                # Content has already passed independent recognition. Preserve
+                # the whole take instead of trimming from unreliable word spans.
+                from .core import ffprobe_duration
+                length = ffprobe_duration(take["path"], runner)
+                take["alignment"] = [{"start_time": 0.0, "end_time": length, "text": take["text"]}]
+                runner.diagnostic("Alignment fallback", cue=i + 1, method="whole validated take", reason="invalid word spans")
+                continue
             take["alignment"] = result["items"]
+    if failures:
+        raise SpeechValidationFailure(failures)
 
 def fit_takes(segments, takes, cuts, q, work, runner):
     from .core import ffprobe_duration, PipelineError, _atomic_json_write, _atomic_media_run
@@ -454,14 +543,18 @@ def shorten_failed(segments, failed, config, q, checkpoints, glossary, runner):
                 approved = True
     return approved
 
-def mix(audio, stems, segments, clips, duration, work, config, q, runner, progress, *, source_segments=None):
-    from .core import (_atomic_media_run, render_dub_timeline,
-                       ffprobe_duration, PipelineError)
+def background_bed(audio, stems, segments, work, runner):
+    from .core import _atomic_media_run
     background = work / "music-effects.wav"
     _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(stems["music"]), "-i", str(stems["effects"]),
         "-filter_complex", "[0:a][1:a]amix=inputs=2:normalize=0:duration=first[b]", "-map", "[b]",
         "-ar", "48000", "-c:a", "pcm_f32le", str(background)], background)
-    bed = hybrid_background(audio, background, source_segments or segments, work, runner)
+    return hybrid_background(audio, background, segments, work, runner)
+
+def mix(audio, stems, segments, clips, duration, work, config, q, runner, progress, *, source_segments=None):
+    from .core import (_atomic_media_run, render_dub_timeline,
+                       ffprobe_duration, PipelineError)
+    bed = background_bed(audio, stems, source_segments or segments, work, runner)
     timeline = render_dub_timeline(segments, clips, duration, work, config, runner, progress)
     _stage(runner, "mixing", "Mixing voices and preserving background")
     drymix = work / "mix-premaster.wav"
@@ -626,20 +719,34 @@ def run_quality(config, progress, runner, *, analysis=False):
     if config.mode == "subtitles":
         return results
     runtime_q = {**q, "media_duration": duration}
+    original_segments = list(segments)
+    delivery_hints = {}
     for attempt in range(3):
-        takes = synthesize_takes(segments, profiles, glossary, config, q, work, version_cp, runner, progress)
-        speech_qa(takes, q, version_cp, runner, progress)
+        takes = generate_checked_speech(segments, profiles, glossary, config, q, work, version_cp, runner, progress,
+                                       delivery_hints=delivery_hints)
+        _atomic_json_write(snapshot_map, {"version": 2, "characters": list(profiles.values()),
+            "pipeline_profile": "quality_v1", "source_key": key,
+            "segments": [s.to_dict() for s in original_segments], "source_sha256": identity,
+            "speaker_backend": "pyannote-community-1", "series_id": config.series_id})
         clips, failed = fit_takes(segments, takes, cuts, runtime_q, work, runner)
         _publish(runner, "timing_plan", work / "timing-plan.json", "en")
         if not failed:
             break
+        if attempt == 0 and any(profiles[segments[i].speaker_id]["tts_provider"] == "qwen" for i in failed):
+            for i in failed:
+                if profiles[segments[i].speaker_id]["tts_provider"] == "qwen":
+                    delivery_hints[i] = ("Keep the expressive style but reduce pauses between phrases; pronounce all words clearly."
+                        if segments[i].style in {"whispering", "shouting"} else
+                        "Deliver fluently at a brisk conversational pace with shorter pauses, preserving every word and its emphasis.")
+            progress("Automatically adjusting voice delivery to the original video timing")
+            continue
         if attempt == 2 or not shorten_failed(segments, failed, config, q, version_cp, glossary, runner):
             if q["allow_rescue_speed"]:
                 rescue_q = {**runtime_q, "normal_speed": q["maximum_speed"], "urgent_speed": q["maximum_speed"]}
                 clips, failed = fit_takes(segments, takes, cuts, rescue_q, work, runner)
             if failed:
-                raise PipelineError("No intelligible timing fit for cues " + ", ".join(str(i + 1) for i in failed)
-                                    + "; all subtitles/voices saved and render blocked")
+                raise PipelineError("Automatic timing recovery could not fit cues " + ", ".join(str(i + 1) for i in failed)
+                                    + "; original video preserved, subtitles and voices saved")
             break
         subtitles()
     rendered = [ffprobe_duration(path, runner) for path in clips]
@@ -672,7 +779,7 @@ def run_quality(config, progress, runner, *, analysis=False):
     # Keep source replacement windows at their original positions while placing
     # English at accepted visual hints. Only the English subtitle timing changes.
     master = mix(audio, stems, timeline_segments, clips, duration, work, config, q, runner, progress,
-                 source_segments=segments)
+                 source_segments=original_segments)
     write_srt(timeline_segments, target_srt, translated=True)
     write_vtt(timeline_segments, target_vtt, translated=True)
     encoded = work / "dub-audio.m4a"

@@ -42,7 +42,7 @@ DEFAULTS = {
     "cloud_review_model": "qwen3.8-max-0902", "allow_cloud": False,
     "voice_engine": "qwen", "qwen_speaker": "Aiden", "american_female_fallback": True,
     "maximum_speed": 1.5, "normal_speed": 1.15, "urgent_speed": 1.25,
-    "expressive_speed": 1.10, "allow_rescue_speed": False,
+    "expressive_speed": 1.10, "allow_rescue_speed": True,
     "on_screen_borrow": 0.25, "off_screen_borrow": 0.6, "speaker_guard": 0.08,
     "qa_word_error_limit": 0.12, "loudness_lufs": -16.0, "true_peak_db": -1.0,
     "series_glossary_path": "", "scene_cuts": [], "off_screen_cues": [],
