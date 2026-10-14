@@ -9,7 +9,7 @@ import re
 import shutil
 
 from .quality_models import options, setup_issues, file_digest, digest
-from .quality_runtime import Worker, Checkpoints
+from .quality_runtime import Worker, Checkpoints, runtime_fingerprints
 from .quality_timing import edit_distance, window, choose_tempo, speech_error, validate_schedule, protected_speech_matches
 from .localization import Glossary, localize, review_prompt, parse_object, validate_review, scene_context, cloud_review
 
@@ -42,6 +42,7 @@ def separation(audio, work, q, cfg, checkpoints, runner, progress):
     _stage(runner, "separating_stems", "Separating dialogue, music and effects")
     identity = {key: q[key] for key in ("bandit_sha256", "bandit_config_sha256", "separator_device",
         "separation_chunk_seconds", "separation_context_seconds")}
+    identity["runtime_versions"] = checkpoints.environment.get("separator_python", {})
     folder = work / ("bandit_" + digest(identity)[:16])
     folder.mkdir(parents=True, exist_ok=True)
     output = {name: folder / f"{name}.wav" for name in ("dialogue", "music", "effects")}
@@ -307,7 +308,8 @@ def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints,
                             "Natural expressive American English dialogue at normal speed. " + str(row.get("notes", "")))
                 identity = {"text": voice_text, "cast": row, "style": instruct,
                     "model": q["models"]["tts"] if engine == "qwen" else engine,
-                    "glossary": glossary.revision, "cloud_model": config.elevenlabs_model_id if engine == "elevenlabs" else None}
+                    "glossary": glossary.revision, "runtime_versions": checkpoints.environment,
+                    "cloud_model": config.elevenlabs_model_id if engine == "elevenlabs" else None}
                 if engine == "index_clone":
                     identity["clone_config_sha256"] = file_digest(q["clone_config"])
                     identity["clone_model_directory"] = q["clone_model_dir"]
@@ -515,6 +517,7 @@ def run_quality(config, progress, runner, *, analysis=False):
         issues.append("This quality profile targets Chinese-to-English; existing providers remain available for other languages")
     if issues:
         raise PipelineError("Quality setup required: " + "; ".join(issues))
+    environment = runtime_fingerprints(q)
     out = Path(config.output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     key = source_key(config.source, out)
@@ -532,10 +535,10 @@ def run_quality(config, progress, runner, *, analysis=False):
     version.mkdir(parents=True, exist_ok=True)
     work = shared / ("dub_" + (config.version_id or "default"))
     work.mkdir(parents=True, exist_ok=True)
-    checkpoints = Checkpoints(shared / "checkpoints", identity, config, runner)
-    version_cp = Checkpoints(work / "checkpoints", identity, config, runner)
+    checkpoints = Checkpoints(shared / "checkpoints", identity, config, runner, environment)
+    version_cp = Checkpoints(work / "checkpoints", identity, config, runner, environment)
     _atomic_json_write(work / "run-manifest.json", {"profile": "quality_v1", "source_sha256": identity,
-        "models": q["models"], "settings": q, "hardware_verified": False, "complete": False})
+        "models": q["models"], "runtime_versions": environment, "settings": q, "hardware_verified": False, "complete": False})
     audio = shared / "original-48k.wav"
     from .core import _complete_wav
     if config.force or not config.resume or not _complete_wav(audio, minimum_seconds=ffprobe_duration(video, runner) * .999):
@@ -655,6 +658,6 @@ def run_quality(config, progress, runner, *, analysis=False):
     for kind, path in (("dubbed_video", final), ("dub_audio", audio_export)):
         _publish(runner, kind, path, "en")
     _atomic_json_write(work / "run-manifest.json", {"profile": "quality_v1", "source_sha256": identity,
-        "models": q["models"], "settings": q, "hardware_verified": False, "complete": True,
+        "models": q["models"], "runtime_versions": environment, "settings": q, "hardware_verified": False, "complete": True,
         "delivered_loudness": final_stats, "artifacts": {k: str(v) for k, v in results.items()}})
     return results

@@ -271,6 +271,7 @@ class QualityEndToEndTests(unittest.TestCase):
             published = []
             runner = CommandRunner(); runner.artifact = lambda kind, *args: published.append(kind)
             with patch("anime_dubber.quality_pipeline.setup_issues", return_value=[]), \
+                 patch("anime_dubber.quality_pipeline.runtime_fingerprints", return_value={"test": "contract fixtures"}), \
                  patch("anime_dubber.quality_pipeline.Worker", FixtureWorker), \
                  patch("anime_dubber.quality_runtime.Worker", FixtureWorker):
                 result = run_pipeline(cfg, lambda _: None, runner)

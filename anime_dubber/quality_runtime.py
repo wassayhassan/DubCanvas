@@ -15,6 +15,21 @@ from .quality_models import digest
 
 _HEAVY_WORKER = threading.Semaphore(1)
 
+def runtime_fingerprints(settings):
+    """Read package versions without importing/loading any ML model."""
+    fingerprints = {}
+    script = ("import importlib.metadata as m,json,platform,sys; names="
+              "['mlx','mlx-lm','mlx-vlm','mlx-audio','torch','torchaudio','pyannote-audio','kokoro','numpy','transformers']; "
+              "d={'python':sys.version,'platform':platform.platform(),'machine':platform.machine(),'packages':{}}; "
+              "\nfor name in names:\n try:d['packages'][name]=m.version(name)\n except m.PackageNotFoundError:pass\n"
+              "print(json.dumps(d))")
+    for key in ("mlx_python", "translation_python", "review_python", "separator_python", "torch_python"):
+        result = subprocess.run([settings[key], "-c", script], capture_output=True, text=True, timeout=15)
+        if result.returncode:
+            raise ValueError(f"Could not inspect isolated environment {key}: {result.stderr[-500:]}")
+        fingerprints[key] = json.loads(result.stdout)
+    return fingerprints
+
 class Worker:
     def __init__(self, role, settings, runner):
         self.role, self.settings, self.runner = role, settings, runner
@@ -153,14 +168,15 @@ class Worker:
             self.lease = False
 
 class Checkpoints:
-    def __init__(self, directory, identity, config, runner):
+    def __init__(self, directory, identity, config, runner, environment=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.identity, self.config, self.runner = identity, config, runner
+        self.environment = environment or {}
 
     def path(self, stage, inputs):
         signature = digest({"pipeline_revision": 1, "source": self.identity,
-                            "stage": stage, "inputs": inputs})
+                            "stage": stage, "inputs": inputs, "environment": self.environment})
         return self.directory / f"{stage}_{signature}.json"
 
     def get(self, stage, inputs):
@@ -178,5 +194,6 @@ class Checkpoints:
         from .core import _atomic_json_write
         path = self.path(stage, inputs)
         _atomic_json_write(path, {"signature": path.stem, "complete": True,
-                                 "source_sha256": self.identity, "inputs": inputs, "result": result})
+                                 "source_sha256": self.identity, "inputs": inputs,
+                                 "runtime_versions": self.environment, "result": result})
         return path

@@ -7,12 +7,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        role: [audio, translation, review, separator, torch]
+        include:
+          - role: audio
+            python: '3.13'
+          - role: translation
+            python: '3.13'
+          - role: review
+            python: '3.13'
+          - role: separator
+            python: '3.13'
+          - role: torch
+            python: '3.12'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python }}
       - name: Require native Apple Silicon runner
         run: python -c 'import platform; assert platform.machine() == "arm64", "Quality dependency checks require an ARM64 runner"'
       - name: Resolve isolated runtime without model downloads

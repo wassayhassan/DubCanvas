@@ -10,7 +10,7 @@ Actual adapter execution is not the same as passing a model-quality benchmark. T
 
 ## Setup on an Apple Silicon Mac
 
-Use native ARM64 Python 3.13. Do not upgrade the existing Chatterbox environment to install this profile.
+Use native ARM64 Python 3.13 plus Python 3.12 for the diarization/Kokoro environment. Kokoro 0.9.4 explicitly excludes Python 3.13; this was caught by native ARM64 dependency CI. Do not upgrade the existing Chatterbox environment to install this profile.
 
 ```sh
 python3.13 tools/install_quality.py --directory "$HOME/DubCanvasQualityEnvironments"
@@ -22,7 +22,7 @@ The installer creates five separate environments, runs pip check and saves each 
 - Translation: MLX 0.31.2 / MLX-LM 0.31.3, matching the Hy adapter's documented smoke-test runtime.
 - Review: MLX 0.32.0 / MLX-VLM 0.6.8. This runtime cannot use the older MLX pin.
 - Separation: PyTorch/torchaudio 2.9.1 and BandIt model-only dependencies. Importing MSST's complete inference/training dependency set introduces unnecessary CUDA packages and incompatible pins.
-- Diarization/Kokoro: PyTorch/torchaudio 2.9.1, pyannote.audio 4.0.7 and matched torchcodec 0.8.1; inference receives waveform arrays to avoid unnecessary decoder dependence.
+- Diarization/Kokoro: Python 3.12, PyTorch/torchaudio 2.9.1, pyannote.audio 4.0.7 and matched torchcodec 0.8.1; inference receives waveform arrays to avoid unnecessary decoder dependence. Pass `--torch-python /path/to/python3.12` if it is not on PATH.
 
 Install ARM64 FFmpeg 9.0.2 and Rubber Band 4.0.0. The Rubber Band executable must support `-3` (R3/Finer) and `-T` (tempo factor). The host FFmpeg used for development tests is a different version, so 9.0.2 remains a target-binary validation gate.
 
