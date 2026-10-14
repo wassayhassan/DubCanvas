@@ -15,7 +15,7 @@ from .quality_models import digest
 
 _HEAVY_WORKER = threading.Semaphore(1)
 
-def runtime_fingerprints(settings):
+def runtime_fingerprints(settings, keys=None):
     """Read package versions without importing/loading any ML model."""
     fingerprints = {}
     script = ("import importlib.metadata as m,json,platform,sys; names="
@@ -23,7 +23,7 @@ def runtime_fingerprints(settings):
               "d={'python':sys.version,'platform':platform.platform(),'machine':platform.machine(),'packages':{}}; "
               "\nfor name in names:\n try:d['packages'][name]=m.version(name)\n except m.PackageNotFoundError:pass\n"
               "print(json.dumps(d))")
-    for key in ("mlx_python", "translation_python", "review_python", "separator_python", "torch_python"):
+    for key in (keys or ("mlx_python", "translation_python", "review_python", "separator_python", "torch_python")):
         result = subprocess.run([settings[key], "-c", script], capture_output=True, text=True, timeout=15)
         if result.returncode:
             raise ValueError(f"Could not inspect isolated environment {key}: {result.stderr[-500:]}")

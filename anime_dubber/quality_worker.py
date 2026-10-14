@@ -119,7 +119,7 @@ def execute(role, request, q):
     if role in {"asr", "verifier"}:
         kwargs = {"beam_size": 3} if role == "asr" else {
             "language": request.get("language"), "max_tokens": 1024,
-            "hotwords": request.get("hotwords", []), "chunk_duration": 30}
+            "hotwords": request.get("hotwords", []), "chunk_duration": 30, "min_chunk_duration": .1}
         result = primitive(model.generate(request["audio"], **kwargs))
         return result
     if role == "fallback":

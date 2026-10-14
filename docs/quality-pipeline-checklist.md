@@ -49,12 +49,12 @@ Updated 2026-10-14. The table above is the pre-edit checklist. This table record
 | Q14 | Source/model/context/glossary signatures; atomic stage/cue checkpoints; per-stage logs/runtime/memory metadata; existing Copy/Export controls retained; actual quality progress events; multi-version cast isolation and resume tested. | Long-episode interruption/disk-pressure/parallel-window soak on Mac outstanding |
 | Q15 | Explicit boolean consent, HTTPS Qwen review endpoint/key environment, Eleven v4 with style tags/existing credential controls, preview consent gate, cost/privacy explanation, credential redaction. Consent tests passed. | No provider credentials supplied; actual billing/retention/region/model availability and output quality not verified |
 | Q16 | IndexTTS2.5 local adapter/config/consent/reference fields and preview connected; native factor 1.0 avoids unmeasured acceleration. Reference/config fingerprints invalidate caches. | Real model/API/MPS clone execution not tested; optimized native duration control not enabled before validation |
-| Q17 | Five isolated requirement files, ARM64 installer with pip check/resolved lock export, settings exporter/setup checker, model manifests/checksums, docs; new ARM64 dependency-resolution CI workflow. | Target environment installation/resolved locks and Hy redistribution audit require actual Mac/assets; CI dependency results recorded below when available |
+| Q17 | Five isolated requirement files, ARM64 installer with pip check/resolved lock export, settings exporter/setup checker, model manifests/checksums, docs; new ARM64 dependency-resolution and native API smoke CI workflow. | Target environment installation/resolved locks and Hy redistribution audit require actual Mac/assets; CI dependency results recorded below when available |
 | Q18 | Full Python regression, real subprocess RPC, real synthetic media E2E/mux/resume, real R3 stretch; Swift tests/build and universal signed bundle tested in initial macOS CI. Evaluation harness supplied. | M5 Max 48 GB, licensed Chinese clips, bilingual/listening raters and full-episode soak unavailable. These gates are BLOCKED, not passed |
 
 ## Observed validation
 
-- Linux x86_64, Python 3.12.14: 198 tests passed with 4 environment skips after installing small test dependencies; real Rubber Band CLI 4.0.0 R3 route exercised. Model outputs in E2E tests are fixtures, not generated speech quality evidence.
+- Linux x86_64, Python 3.12.14: 199 tests passed with 4 environment skips after installing small test dependencies; real Rubber Band CLI 4.0.0 R3 route exercised. Model outputs in E2E tests are fixtures, not generated speech quality evidence.
 - Source preflight and `git diff --check` passed. Base environment `pip check` passed.
 - Initial PR commit `35f5229`: GitHub macOS backend, Ubuntu backend, SwiftUI tests/build, universal bundle/signing/validation passed. Windows initially exposed UTF-8/default-codepage glossary loading; fixed and regression-tested. Updated CI must pass before this draft is eligible for review.
 - Unavailable locally: SwiftUI SDK/MPS/MLX execution, 48 GB unified-memory measurements, actual cloud accounts, bilingual gold media and character/voice listening panel. No GPU/ASR/TTS/translation quality results fabricated.
@@ -62,3 +62,5 @@ Updated 2026-10-14. The table above is the pre-edit checklist. This table record
 ## Release decision
 
 Remain an experimental, opt-in profile and draft PR. Existing working providers/casts/data remain available. Do not merge/promote based only on mocked model contracts or a successful Swift build. The code is connected and has explicit repair/block behavior; the real-model, licensing, overlap/identity and domain-quality limitations above are substantive unfinished acceptance gates.
+
+Native ARM64 resolution evidence: workflow 38490298067 passed all five isolated environments, including Python 3.12 for Kokoro/diarization. This is dependency resolution, not inference. Native installation/API smoke checks are included in the updated workflow.

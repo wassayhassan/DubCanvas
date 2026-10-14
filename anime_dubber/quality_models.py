@@ -96,7 +96,7 @@ def file_digest(path):
             h.update(block)
     return h.hexdigest()
 
-def setup_issues(settings, *, require_platform=True):
+def setup_issues(settings, *, require_platform=True, mode="dub", analysis=False):
     q = options(settings)
     issues = []
     if require_platform and (platform.system(), platform.machine()) != ("Darwin", "arm64"):
@@ -108,10 +108,12 @@ def setup_issues(settings, *, require_platform=True):
                 issues.append("The selected 30B/27B quality stack requires at least 48 GB unified memory; use existing providers on smaller Macs")
         except ImportError:
             issues.append("Install psutil in the backend for memory preflight")
-    for exe in ("ffmpeg", "ffprobe", "rubberband"):
+    voice_work = mode == "dub" and not analysis
+    for exe in (("ffmpeg", "ffprobe", "rubberband") if voice_work else ("ffmpeg", "ffprobe")):
         if not shutil.which(exe):
             issues.append(f"Install {exe} (Rubber Band 4.0.0 with R3 support is required)")
-    for name in ("mlx_python", "translation_python", "review_python", "separator_python", "torch_python"):
+    environments = ("mlx_python", "separator_python", "torch_python") if analysis else ("mlx_python", "translation_python", "review_python", "separator_python", "torch_python")
+    for name in environments:
         if not q[name] or not Path(q[name]).is_file():
             issues.append(f"Set {name} to the isolated worker environment's Python")
     for name in ("bandit_config", "bandit_checkpoint"):
@@ -121,7 +123,9 @@ def setup_issues(settings, *, require_platform=True):
         issues.append("Configure the audited Music-Source-Separation-Training checkout (msst_path)")
     if not q["bandit_sha256"] or not q["bandit_config_sha256"]:
         issues.append("Record audited BandIt checkpoint/config SHA-256 before loading")
-    if not q["translation_model_path"] or not q["translation_adapter_sha256"]:
+    if analysis:
+        pass
+    elif not q["translation_model_path"] or not q["translation_adapter_sha256"]:
         issues.append("Audit Hy adapter/license provenance; configure local translation_model_path and adapter SHA-256")
     else:
         adapter = Path(q["translation_model_path"]).expanduser() / "hy_v3.py"
@@ -132,10 +136,10 @@ def setup_issues(settings, *, require_platform=True):
     for key, checksum in (("bandit_checkpoint", "bandit_sha256"), ("bandit_config", "bandit_config_sha256")):
         if q[key] and Path(q[key]).is_file() and q[checksum] and file_digest(q[key]) != q[checksum]:
             issues.append(f"{key} does not match its audited checksum")
-    if q["review_provider"] == "cloud" or q["voice_engine"] == "elevenlabs":
+    if (not analysis and q["review_provider"] == "cloud") or (voice_work and q["voice_engine"] == "elevenlabs"):
         if not q["allow_cloud"]:
             issues.append("Enable explicit cloud text upload consent for the selected cloud provider")
-    if q["voice_engine"] == "index_clone":
+    if voice_work and q["voice_engine"] == "index_clone":
         if not q["reference_consent"]:
             issues.append("Explicit reference voice consent is required")
         for name in ("clone_python", "clone_model_dir", "clone_config"):

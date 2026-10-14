@@ -348,7 +348,7 @@ struct NewDubView: View {
         HStack {
             Spacer()
 
-            if pipelineExpanded {
+            if pipelineExpanded || state.pipelineProfile == "quality_v1" {
                 Button("Analyze Characters Only") {
                     state.startJob(analysis: true)
                 }

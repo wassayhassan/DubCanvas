@@ -17,6 +17,14 @@ from anime_dubber.localization import Glossary, localize, validate_review, parse
 from anime_dubber.application.service import config_from_dict, ApplicationService
 
 class QualityConfigTests(unittest.TestCase):
+    def test_subtitles_and_analysis_do_not_require_unrelated_voice_resources(self):
+        from anime_dubber.quality_models import setup_issues
+        q = options({"voice_engine": "index_clone"})
+        with patch("anime_dubber.quality_models.shutil.which", return_value=None):
+            issues = setup_issues(q, require_platform=False, mode="subtitles")
+            self.assertFalse(any("rubberband" in issue or "clone_python" in issue for issue in issues))
+            issues = setup_issues(q, require_platform=False, analysis=True)
+            self.assertFalse(any("Hy adapter" in issue or "translation_python" in issue or "review_python" in issue for issue in issues))
     def test_consent_is_explicit_boolean_not_truthy_text(self):
         for key in ("allow_cloud", "reference_consent"):
             with self.assertRaises(ValueError):
@@ -90,6 +98,8 @@ class CheckpointTests(unittest.TestCase):
             self.assertIsNone(cp.get("translation", {**inputs, "revision": "sha-b"}))
             other = Checkpoints(td, "source-b", Config("x", Path(td)), CommandRunner())
             self.assertIsNone(other.get("translation", inputs))
+            changed_runtime = Checkpoints(td, "source-a", Config("x", Path(td)), CommandRunner(), {"mlx": "new"})
+            self.assertIsNone(changed_runtime.get("translation", inputs))
             path = cp.path("translation", inputs)
             path.write_text('{"complete": false}')
             self.assertIsNone(cp.get("translation", inputs))
@@ -268,6 +278,11 @@ class QualityEndToEndTests(unittest.TestCase):
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=25:d=4",
                 "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=4", "-c:v", "mpeg4", "-c:a", "aac", "-shortest", str(video)], check=True)
             cfg = Config(str(video), root / "out", pipeline_profile="quality_v1", source_language="zh", version_id="one", glossary={})
+            from anime_dubber.core import source_key
+            cfg.output_dir.mkdir()
+            legacy_map = cfg.output_dir / f"{source_key(cfg.source, cfg.output_dir)}_characters.json"
+            legacy_bytes = b'{"characters":[{"id":"old","display_name":"User edited voice","manual":true}]}'
+            legacy_map.write_bytes(legacy_bytes)
             published = []
             runner = CommandRunner(); runner.artifact = lambda kind, *args: published.append(kind)
             with patch("anime_dubber.quality_pipeline.setup_issues", return_value=[]), \
@@ -278,6 +293,7 @@ class QualityEndToEndTests(unittest.TestCase):
                 resumed = run_pipeline(cfg, lambda _: None, runner)
             self.assertTrue(result["dubbed_video"].is_file())
             self.assertTrue(resumed["dubbed_video"].is_file())
+            self.assertEqual(legacy_map.read_bytes(), legacy_bytes)
             self.assertLess(published.index("translated_srt"), published.index("dubbed_video"))
             self.assertIn("Hello", result["translated_srt"].read_text())
             manifest = list((root / "out").rglob("run-manifest.json"))[0]

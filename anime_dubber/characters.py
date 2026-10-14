@@ -913,7 +913,7 @@ def list_character_maps(output_dir: Path) -> List[dict]:
         chars = [x for x in data.get("characters", []) if isinstance(x, dict)]
         rows.append({
             "path": str(path),
-            "source_key": path.name.removesuffix("_characters.json"),
+            "source_key": str(data.get("source_key") or path.name.removesuffix("_characters.json")),
             "series_id": str(data.get("series_id", "")),
             "speaker_backend": str(data.get("speaker_backend", "")),
             "character_count": len(chars),

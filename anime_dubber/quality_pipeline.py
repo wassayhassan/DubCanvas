@@ -276,7 +276,12 @@ def cast(segments, config, q, path, runner):
         if row.get("kokoro_voice") in {"", "auto", None}:
             row["kokoro_voice"] = automatic_kokoro_voice(row)
         profiles[sid] = row
+        if row.get("voice_class") == "neutral" and not row.get("manual"):
+            runner.progress(f"Warning: {profile.display_name} has no validated character voice-class evidence; "
+                            f"using fixed preset {row.get('qwen_speaker') or row.get('kokoro_voice')}. "
+                            "Its voice stays consistent; verify casting in Speakers.")
     write_character_map({"version": 2, "series_id": config.series_id, "speaker_backend": "pyannote-community-1",
+        "source_key": path.name.removesuffix("_quality_characters.json"), "pipeline_profile": "quality_v1",
         "characters": shared_profiles, "segments": [s.to_dict() for s in segments],
         "notes": {"identity": "Acoustic speaker IDs; semantic character/age/sex identity requires evidence, not pitch"}}, path)
     _publish(runner, "character_map", path, config.target_language)
@@ -512,12 +517,12 @@ def run_quality(config, progress, runner, *, analysis=False):
     from .core import (PipelineError, download_source, validate_source_cache, source_key, _atomic_media_run,
         ffprobe_duration, _atomic_json_write, write_srt, write_vtt, _character_map_path, mux_video, validate_media_streams)
     q = options(config.quality_settings)
-    issues = setup_issues(q)
+    issues = setup_issues(q, mode=config.mode, analysis=analysis)
     if config.target_language != "en" or config.source_language not in {"zh", "auto"}:
         issues.append("This quality profile targets Chinese-to-English; existing providers remain available for other languages")
     if issues:
         raise PipelineError("Quality setup required: " + "; ".join(issues))
-    environment = runtime_fingerprints(q)
+    environment = runtime_fingerprints(q, keys=("mlx_python", "separator_python", "torch_python") if analysis else None)
     out = Path(config.output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     key = source_key(config.source, out)
@@ -556,10 +561,12 @@ def run_quality(config, progress, runner, *, analysis=False):
     write_vtt(segments, source_vtt)
     for kind, path in (("chinese_srt", source_srt), ("chinese_vtt", source_vtt)):
         _publish(runner, kind, path, "zh")
-    char_path = _character_map_path(config, out, key)
+    # A different diarization backend must never replace legacy manual character edits.
+    char_path = out / f"{key}_quality_characters.json"
     profiles = cast(segments, config, q, char_path, runner)
     snapshot_map = version / f"{key}_characters.json" if config.version_id else work / "version-characters.json"
     _atomic_json_write(snapshot_map, {"version": 2, "characters": list(profiles.values()),
+        "pipeline_profile": "quality_v1", "source_key": key,
         "segments": [s.to_dict() for s in segments], "source_sha256": identity,
         "speaker_backend": "pyannote-community-1", "series_id": config.series_id})
     _publish(runner, "character_map", snapshot_map, "en")

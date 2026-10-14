@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct QualitySettingsView: View {
     @EnvironmentObject private var state: AppState
@@ -30,6 +31,15 @@ struct QualitySettingsView: View {
             }
             Section("Setup Verification") {
                 Button("Check Quality Setup") { state.checkQualitySetup() }
+                Button("Open Setup Guide") {
+                    let bundled = Bundle.main.resourceURL?.appendingPathComponent("backend/docs/quality-pipeline.md")
+                    let source = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("docs/quality-pipeline.md")
+                    if let bundled, FileManager.default.fileExists(atPath: bundled.path) {
+                        NSWorkspace.shared.open(bundled)
+                    } else if FileManager.default.fileExists(atPath: source.path) {
+                        NSWorkspace.shared.open(source)
+                    } else { state.qualitySetupReport = "Setup guide is available in the DubCanvas repository: docs/quality-pipeline.md." }
+                }
                 if !state.qualitySetupReport.isEmpty {
                     Text(state.qualitySetupReport).font(.caption).textSelection(.enabled)
                 }

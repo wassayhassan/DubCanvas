@@ -1245,7 +1245,10 @@ final class AppState: ObservableObject {
             } else if id.hasPrefix("character-maps-") {
                 let rows = resultAny as? [[String: Any]] ?? []
                 characterMaps = rows.compactMap(CharacterMapSummary.init(dictionary:))
-                let scoped = characterMaps.filter { $0.sourceKey == selectedProjectID }
+                let scoped = characterMaps.filter {
+                    $0.sourceKey == selectedProjectID &&
+                    (pipelineProfile == "quality_v1" ? $0.speakerBackend == "pyannote-community-1" : $0.speakerBackend != "pyannote-community-1")
+                }
                 if let selected = selectedCharacterMapPath,
                    scoped.contains(where: { $0.path == selected }) {
                     loadCharacterMap(selected)

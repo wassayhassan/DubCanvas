@@ -351,7 +351,7 @@ class ApplicationService:
         """Reject missing selected providers before a long job creates a version."""
         if config.pipeline_profile == "quality_v1":
             from ..quality_models import setup_issues
-            issues = setup_issues(config.quality_settings)
+            issues = setup_issues(config.quality_settings, mode=config.mode, analysis=analysis)
             if config.target_language != "en" or config.source_language not in {"zh", "auto"}:
                 issues.append("Quality v1 currently supports Chinese-to-English")
             if issues:
@@ -931,6 +931,8 @@ class ApplicationService:
         saved = update_character_override(Path(path).expanduser(), character_id, updates)
         character_path = Path(path).expanduser().resolve()
         key = character_path.name.removesuffix("_characters.json")
+        if character_path.name.endswith("_quality_characters.json"):
+            key = character_path.name.removesuffix("_quality_characters.json")
         if character_path.name.endswith("_characters.json"):
             store = ProjectStore(character_path.parent, "placeholder")
             store.project_id = key

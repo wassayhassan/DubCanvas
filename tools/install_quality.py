@@ -44,9 +44,9 @@ def main():
         subprocess.run([str(python), "-m", "pip", "install", "-r", str(root / f"requirements-quality-{role}.txt")], check=True)
         subprocess.run([str(python), "-m", "pip", "check"], check=True)
         result = subprocess.run([str(python), "-m", "pip", "freeze"], check=True, capture_output=True, text=True)
-        (directory / f"{role}.resolved.lock.txt").write_text(result.stdout)
+        (directory / f"{role}.resolved.lock.txt").write_text(result.stdout, encoding="utf-8")
         settings[{"audio": "mlx_python", "translation": "translation_python", "review": "review_python", "separator": "separator_python", "torch": "torch_python"}[role]] = str(python)
-    (directory / "worker-paths.json").write_text(json.dumps(settings, indent=2))
+    (directory / "worker-paths.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print(directory / "worker-paths.json")
 
 if __name__ == "__main__":
