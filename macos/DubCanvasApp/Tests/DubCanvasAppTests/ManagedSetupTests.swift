@@ -15,4 +15,20 @@ final class ManagedSetupTests: XCTestCase {
         try Data("torch<2.7\n".utf8).write(to: root.appendingPathComponent("constraints.txt"))
         XCTAssertNotEqual(initial, ManagedSetup.fingerprint(at: root))
     }
+    func testUnbundledToolsPreserveExistingVoiceConfiguration() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let original = ["PATH": "/custom/bin", "PHONEMIZER_ESPEAK_LIBRARY": "/custom/espeak.dylib"]
+        XCTAssertEqual(BackendProcess.bundledToolsEnvironment(resources: root, environment: original), original)
+        let tools = root.appendingPathComponent("tools")
+        try FileManager.default.createDirectory(at: tools.appendingPathComponent("lib"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Partial tools never replace a working phonemizer configuration.
+        let partial = BackendProcess.bundledToolsEnvironment(resources: root, environment: original)
+        XCTAssertEqual(partial["PHONEMIZER_ESPEAK_LIBRARY"], original["PHONEMIZER_ESPEAK_LIBRARY"])
+        try Data().write(to: tools.appendingPathComponent("lib/libespeak-ng.1.dylib"))
+        try FileManager.default.createDirectory(at: tools.appendingPathComponent("share/espeak-ng-data"), withIntermediateDirectories: true)
+        let bundled = BackendProcess.bundledToolsEnvironment(resources: root, environment: original)
+        XCTAssertEqual(bundled["PHONEMIZER_ESPEAK_LIBRARY"], tools.appendingPathComponent("lib/libespeak-ng.1.dylib").path)
+    }
+
 }

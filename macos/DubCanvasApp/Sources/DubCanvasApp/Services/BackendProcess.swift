@@ -74,12 +74,10 @@ final class BackendProcess {
                 searchPaths.insert(directory, at: 0)
             }
         }
-        if let resources = Bundle.main.resourceURL {
-            searchPaths.insert(resources.appendingPathComponent("tools").path, at: 0)
-            environment["PHONEMIZER_ESPEAK_LIBRARY"] = resources.appendingPathComponent("tools/lib/libespeak-ng.1.dylib").path
-            environment["ESPEAK_DATA_PATH"] = resources.appendingPathComponent("tools/share/espeak-ng-data").path
-        }
         environment["PATH"] = searchPaths.joined(separator: ":")
+        if let resources = Bundle.main.resourceURL {
+            environment = Self.bundledToolsEnvironment(resources: resources, environment: environment)
+        }
         process.environment = environment
 
         process.standardInput = input
@@ -169,6 +167,21 @@ final class BackendProcess {
         }
     }
 
+    static func bundledToolsEnvironment(resources: URL, environment: [String: String]) -> [String: String] {
+        var result = environment
+        let tools = resources.appendingPathComponent("tools")
+        let library = tools.appendingPathComponent("lib/libespeak-ng.1.dylib")
+        let data = tools.appendingPathComponent("share/espeak-ng-data")
+        if FileManager.default.fileExists(atPath: tools.path) {
+            result["PATH"] = tools.path + ":" + (result["PATH"] ?? "/usr/bin:/bin")
+        }
+        if FileManager.default.isReadableFile(atPath: library.path) && FileManager.default.fileExists(atPath: data.path) {
+            result["PHONEMIZER_ESPEAK_LIBRARY"] = library.path
+            result["ESPEAK_DATA_PATH"] = data.path
+        }
+        return result
+    }
+
     private func consumeStdout(_ data: Data) {
         stdoutBuffer.append(data)
 
@@ -238,15 +251,16 @@ final class BackendProcess {
 
     private func locatePython(for backendRoot: URL) throws -> PythonLaunch {
         let fileManager = FileManager.default
-        if ManagedSetup.coreReady(at: backendRoot) {
-            return PythonLaunch(url: ManagedSetup.directory.appendingPathComponent("core/bin/python"), arguments: [])
-        }
         let embeddedCandidates = [
             backendRoot.appendingPathComponent(".venv/bin/python"),
             backendRoot.appendingPathComponent(".venv/bin/python3"),
         ]
         for candidate in embeddedCandidates where fileManager.isExecutableFile(atPath: candidate.path) {
             return PythonLaunch(url: candidate, arguments: [])
+        }
+
+        if ManagedSetup.coreReady(at: backendRoot) {
+            return PythonLaunch(url: ManagedSetup.directory.appendingPathComponent("core/bin/python"), arguments: [])
         }
 
         if let resources = Bundle.main.resourceURL {
