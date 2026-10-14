@@ -1,6 +1,7 @@
 """Evidence-linked terminology, complete cue translation and independent meaning gates."""
 from __future__ import annotations
 import json
+import copy
 import os
 from pathlib import Path
 import re
@@ -30,6 +31,8 @@ class Glossary:
             value = json.loads(self.path.read_text(encoding="utf-8"))
             self.entries = value.get("entries", {})
             self.ranks = value.get("realm_order", [])
+        self._baseline = copy.deepcopy(self.entries)
+        self._baseline_ranks = list(self.ranks)
         for chinese, english in seed.items():
             self.entries.setdefault(chinese, {"source": chinese, "english": english,
                 "aliases": [], "kind": "term", "pronunciation": "", "evidence": [], "confirmed": True})
@@ -73,11 +76,34 @@ class Glossary:
             if self.path.exists():
                 latest = json.loads(self.path.read_text(encoding="utf-8"))
                 for key, row in latest.get("entries", {}).items():
-                    if key in self.entries and self.entries[key]["english"] != row["english"]:
+                    local = self.entries.get(key)
+                    if local is None:
+                        self.entries[key] = copy.deepcopy(row)
+                        continue
+                    if local["english"] != row["english"]:
                         raise ValueError(f"Glossary changed during processing at {key}; retry with the new terminology")
-                    self.entries.setdefault(key, row)
+                    base = self._baseline.get(key, {})
+                    for field in ("kind", "pronunciation"):
+                        old, ours, theirs = base.get(field, ""), local.get(field, ""), row.get(field, "")
+                        if ours != old and theirs != old and ours != theirs:
+                            raise ValueError(f"Conflicting glossary {field} for {key}")
+                        local[field] = ours if ours != old else theirs
+                    for field in ("evidence", "aliases"):
+                        merged = copy.deepcopy(row.get(field, []))
+                        for value in local.get(field, []):
+                            if value not in merged:
+                                merged.append(value)
+                        local[field] = merged
+                    local["confirmed"] = bool(local.get("confirmed") or row.get("confirmed") or len(local["evidence"]) >= 2)
+                latest_ranks = latest.get("realm_order", [])
+                if self.ranks != self._baseline_ranks and latest_ranks != self._baseline_ranks and self.ranks != latest_ranks:
+                    raise ValueError("Conflicting glossary realm order")
+                if self.ranks == self._baseline_ranks:
+                    self.ranks = latest_ranks
             _atomic_json_write(self.path, {"version": 1, "revision": self.revision,
                                         "entries": self.entries, "realm_order": self.ranks})
+            self._baseline = copy.deepcopy(self.entries)
+            self._baseline_ranks = list(self.ranks)
 
     def voice_text(self, target):
         for row in sorted(self.entries.values(), key=lambda x: len(x["english"]), reverse=True):

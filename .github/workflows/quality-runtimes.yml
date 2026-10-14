@@ -1,6 +1,8 @@
 name: Quality runtime dependency resolution
 on:
   pull_request:
+  push:
+    branches: [main]
 jobs:
   resolve:
     runs-on: macos-latest

@@ -10,7 +10,7 @@ import shutil
 
 from .quality_models import options, setup_issues, file_digest, digest
 from .quality_runtime import Worker, Checkpoints, runtime_fingerprints
-from .quality_timing import edit_distance, window, choose_tempo, speech_error, validate_schedule, protected_speech_matches, chinese_critical_matches, normalize_chinese_numbers
+from .quality_timing import edit_distance, window, choose_tempo, speech_error, validate_schedule, protected_speech_matches, chinese_critical_matches, normalize_chinese_numbers, validate_source_alignment
 from .localization import Glossary, localize, review_prompt, parse_object, validate_review, scene_context, cloud_review
 
 def _publish(runner, kind, path, language):
@@ -114,7 +114,7 @@ def recognize(audio, dialogue, q, cfg, work, checkpoints, runner, progress):
             path = folder / f"{i:05}_{name}.wav"
             _cut_audio(source, path, a, b - a, runner)
             paths[name] = str(path)
-        windows.append({"index": i, "start": start, "end": end, "audio_start": a, "paths": paths})
+        windows.append({"index": i, "start": start, "end": end, "audio_start": a, "audio_end": b, "paths": paths})
     for role in ("asr", "verifier"):
         _stage(runner, "transcribing", "Recognizing Chinese" if role == "asr" else "Independently checking speech")
         with Worker(role, q, runner) as worker:
@@ -189,12 +189,22 @@ def recognize(audio, dialogue, q, cfg, work, checkpoints, runner, progress):
         for row in windows:
             if not row["text"]:
                 continue
-            result = _cached_call(worker, checkpoints, "source_alignment", {"model": q["models"]["aligner"],
-                "source": row["text"], "window": row["index"], "audio_sha256": file_digest(row["paths"]["original"])},
-                {"audio": row["paths"]["original"], "text": row["text"], "language": "Chinese"})
-            items = result.get("items", [])
-            if not items:
-                raise PipelineError(f"Chinese aligner returned no timestamps at chunk {row['index'] + 1}")
+            problems = []
+            for view in ("original", "dialogue"):
+                result = _cached_call(worker, checkpoints, "source_alignment", {"model": q["models"]["aligner"],
+                    "source": row["text"], "window": row["index"], "view": view, "coverage_validator": 2,
+                    "audio_sha256": file_digest(row["paths"][view])},
+                    {"audio": row["paths"][view], "text": row["text"], "language": "Chinese"})
+                items = result.get("items", [])
+                try:
+                    validate_source_alignment(row["text"], items, row["audio_end"] - row["audio_start"])
+                    break
+                except (ValueError, TypeError, KeyError) as exc:
+                    problems.append(str(exc))
+                    progress(f"Automatically retrying source alignment on separated dialogue at chunk {row['index'] + 1}")
+            else:
+                raise PipelineError(f"Chinese alignment could not preserve complete text at chunk {row['index'] + 1}: "
+                                    + "; ".join(problems) + ". Complete provisional subtitles saved; no dialogue discarded")
             for item in items:
                 a, b = float(item["start_time"]) + row["audio_start"], float(item["end_time"]) + row["audio_start"]
                 if not math.isfinite(a) or not math.isfinite(b) or b <= a:
@@ -622,7 +632,7 @@ def hybrid_background(original, separated, segments, work, runner):
 
 def run_quality(config, progress, runner, *, analysis=False):
     from .core import (PipelineError, download_source, validate_source_cache, source_key, _atomic_media_run,
-        ffprobe_duration, _atomic_json_write, write_srt, write_vtt, _character_map_path, mux_video, validate_media_streams)
+        ffprobe_duration, _atomic_json_write, write_srt, write_vtt, _character_map_path, validate_media_streams)
     q = options(config.quality_settings)
     issues = setup_issues(q, mode=config.mode, analysis=analysis)
     if config.target_language != "en" or config.source_language not in {"zh", "auto"}:
@@ -662,10 +672,13 @@ def run_quality(config, progress, runner, *, analysis=False):
         "models": q["models"], "runtime_versions": environment, "settings": q, "hardware_verified": False, "complete": False})
     audio = shared / "original-48k.wav"
     from .core import _complete_wav
-    if config.force or not config.resume or not _complete_wav(audio, minimum_seconds=ffprobe_duration(video, runner) * .999):
+    from .quality_export import source_duration, mux_preserving_video
+    duration = source_duration(video, runner)
+    # Audio-only duration can be shorter than the video. Pad silence rather than
+    # truncate the source frames; use the complete original container timeline.
+    if config.force or not config.resume or not _complete_wav(audio, minimum_seconds=duration * .999):
         _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vn",
-            "-ac", "2", "-ar", "48000", "-c:a", "pcm_f32le", str(audio)], audio)
-    duration = ffprobe_duration(audio, runner)
+            "-af", "apad", "-t", str(duration), "-ac", "2", "-ar", "48000", "-c:a", "pcm_f32le", str(audio)], audio)
     if shutil.disk_usage(shared).free < duration * 48000 * 2 * 4 * 8:
         raise PipelineError("Insufficient workspace disk for streamed stems, voices and checkpoints")
     _publish(runner, "source_video", video, "zh")
@@ -787,7 +800,7 @@ def run_quality(config, progress, runner, *, analysis=False):
     encoded = work / "dub-audio.m4a"
     _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(master), "-c:a", "aac", "-b:a", "256k", str(encoded)], encoded)
     final = version / f"{key}_EN_DUB.mp4"
-    mux_video(video, encoded, final, runner, progress)
+    final = mux_preserving_video(video, encoded, final, runner, progress)
     validate_media_streams(final, runner)
     # Measure the delivered AAC stream: encoding can introduce intersample peaks.
     checked = runner.run(["ffmpeg", "-hide_banner", "-i", str(final), "-af", "loudnorm=print_format=json", "-f", "null", "-"])

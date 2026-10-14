@@ -310,7 +310,7 @@ class QualityEndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); video = root / "source.mp4"
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=25:d=4",
-                "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=4", "-c:v", "mpeg4", "-c:a", "aac", "-shortest", str(video)], check=True)
+                "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=2", "-c:v", "mpeg4", "-c:a", "aac", str(video)], check=True)
             cfg = Config(str(video), root / "out", pipeline_profile="quality_v1", source_language="zh", version_id="one", glossary={})
             from anime_dubber.core import source_key
             cfg.output_dir.mkdir()

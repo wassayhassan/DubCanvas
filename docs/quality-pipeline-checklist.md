@@ -61,7 +61,7 @@ Updated 2026-10-14. The table above is the pre-edit checklist. This table record
 
 ## Release decision
 
-Remain an experimental, opt-in profile and draft PR. Existing working providers/casts/data remain available. Do not merge/promote based only on mocked model contracts or a successful Swift build. The code is connected and has explicit repair/block behavior; the real-model, licensing, overlap/identity and domain-quality limitations above are substantive unfinished acceptance gates.
+Remain an experimental, opt-in profile. Existing working providers/casts/data remain available. Production-default promotion requires real-model and hardware quality validation; publishing the experimental integration requires independent code review and complete CI. The code is connected and has explicit repair/block behavior; the real-model, licensing, overlap/identity and domain-quality limitations above are substantive unfinished acceptance gates.
 
 Native ARM64 resolution evidence: workflow 38490298067 passed all five isolated environments, including Python 3.12 for Kokoro/diarization. This is dependency resolution, not inference. Native installation/API smoke checks are included in the updated workflow.
 
@@ -111,3 +111,10 @@ Latest user constraint: preserve the exact source-video duration and pacing. Vid
 Local regression: 215 tests run successfully, 4 environment skips. The real-media fixture run/resume, video packet/timestamp identity check, source preflight, whitespace and isolated dependency checks pass. A final cancellation regression confirms Pause/Cancel is propagated rather than consuming a voice-repair attempt.
 
 Final automatic-recovery code: `9618fba538c7bd9b7ca7b848cca072dcec9df8ea`. All CI workflows passed: [backend on three platforms](https://github.com/wassayhassan/DubCanvas/actions/runs/38505455909), [SwiftUI](https://github.com/wassayhassan/DubCanvas/actions/runs/38505455934), [all five native ARM64 environments](https://github.com/wassayhassan/DubCanvas/actions/runs/38505455972), and [universal packaging](https://github.com/wassayhassan/DubCanvas/actions/runs/38505455910). The earlier recovery revision `5daf082` also passed its CI; the final revision adds cancellation preservation. Documentation-only evidence updates do not alter verified code. Real-model accuracy and M5 Max quality/performance gates remain unverified; PR remains draft and no public update is published.
+
+
+## Independent release review
+
+The user authorized publication after independent code review and corrections. Review identified short-audio video truncation, unchecked Chinese alignment coverage, and stale glossary evidence loss. Quality exports now pad source audio to its complete original timeline, stream-copy every original video packet, verify packet content and pacing, and automatically use MKV when MP4 cannot preserve the source codec/timeline. Video is never extended or retimed. Chinese alignment must cover the full accepted transcript with valid ordered bounds; separated dialogue is retried automatically and complete provisional subtitles survive unresolved failures. Concurrent glossary saves merge evidence/aliases/confirmation and preserve unrelated metadata; incompatible edits fail explicitly.
+
+Native runtime dependency CI runs on main and is required by update publication alongside backend and Swift checks. Earlier draft/no-public-update notes above describe historical revisions. This revision is eligible for experimental publication after reviewer signoff and all CI; production-default, real-model/M5 quality and redistribution gates remain unverified. Model weights are not bundled.

@@ -1,6 +1,20 @@
 """Hard safety constraints and joint timeline validation for quality dubbing."""
 from __future__ import annotations
 import re
+import math
+
+def validate_source_alignment(source, items, duration):
+    """Alignment positions may not replace or truncate accepted transcription."""
+    normalize = lambda text: re.sub(r"[\W_]", "", normalize_chinese_numbers(text)).casefold()
+    if not items or normalize("".join(str(row.get("text", "")) for row in items)) != normalize(source):
+        raise ValueError("alignment omitted or added accepted source words")
+    previous_start = previous_end = -1.0
+    for row in items:
+        start, end = float(row["start_time"]), float(row["end_time"])
+        if (not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start
+                or end > duration + .025 or start < previous_start or end < previous_end):
+            raise ValueError("alignment has invalid, unordered or out-of-range spans")
+        previous_start, previous_end = start, end
 
 def window(segments, index, duration, cuts, settings):
     seg = segments[index]
