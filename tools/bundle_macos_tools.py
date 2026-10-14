@@ -15,7 +15,7 @@ def bundle(destination):
     library = destination / 'lib'; library.mkdir(exist_ok=True)
     queue = []
     provenance = []
-    for tool in ('uv', 'ffmpeg', 'ffprobe', 'rubberband'):
+    for tool in ('uv', 'ffmpeg', 'ffprobe', 'rubberband', 'deno'):
         source = shutil.which(tool)
         if not source: raise RuntimeError(f'Install {tool} on the packaging machine')
         target = destination / tool; shutil.copy2(source, target); queue.append(target)
@@ -46,7 +46,7 @@ def bundle(destination):
             subprocess.run(['install_name_tool', '-id', '@loader_path/' + binary.name, str(binary)], check=True)
     # Keep formula metadata and available notices with the distributed tools.
     notices = destination / 'licenses'; notices.mkdir(exist_ok=True)
-    formulae = {'uv', 'ffmpeg', 'rubberband', 'espeak-ng'}
+    formulae = {'uv', 'ffmpeg', 'rubberband', 'espeak-ng', 'deno'}
     for source in copied.values():
         parts = source.parts
         if 'Cellar' in parts:
@@ -66,8 +66,8 @@ def bundle(destination):
             if not dependency.startswith('@loader_path/') or not (binary.parent / dependency.removeprefix('@loader_path/')).exists():
                 raise RuntimeError(f'Unresolved portable dependency {dependency} in {binary.name}')
     (destination / 'provenance.json').write_text(json.dumps(provenance, indent=2))
-    for tool in ('uv', 'ffmpeg', 'ffprobe', 'rubberband'):
-        subprocess.run([str(destination / tool), '--version' if tool in ('uv', 'rubberband') else '-version'], check=True, stdout=subprocess.DEVNULL)
+    for tool in ('uv', 'ffmpeg', 'ffprobe', 'rubberband', 'deno'):
+        subprocess.run([str(destination / tool), '--version' if tool in ('uv', 'rubberband', 'deno') else '-version'], check=True, stdout=subprocess.DEVNULL)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(); parser.add_argument('destination', type=Path)

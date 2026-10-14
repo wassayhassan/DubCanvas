@@ -10,8 +10,9 @@ final class ManagedSetup: ObservableObject {
     nonisolated static var backend: URL? { Bundle.main.resourceURL?.appendingPathComponent("backend") }
     nonisolated static func fingerprint(at backend: URL) -> String? {
         guard let requirements = try? Data(contentsOf: backend.appendingPathComponent("requirements.txt")),
-              let constraints = try? Data(contentsOf: backend.appendingPathComponent("constraints.txt")) else { return nil }
-        return SHA256.hash(data: requirements + constraints + Data("kokoro==0.9.4".utf8)).map { String(format: "%02x", $0) }.joined()
+              let constraints = try? Data(contentsOf: backend.appendingPathComponent("constraints.txt")),
+              let managed = try? Data(contentsOf: backend.appendingPathComponent("requirements-managed-core.txt")) else { return nil }
+        return SHA256.hash(data: requirements + constraints + managed).map { String(format: "%02x", $0) }.joined()
     }
     nonisolated static func coreReady(at backend: URL) -> Bool {
         guard FileManager.default.isExecutableFile(atPath: directory.appendingPathComponent("core/bin/python").path),

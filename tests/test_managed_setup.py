@@ -81,3 +81,10 @@ class ManagedSetupTests(unittest.TestCase):
         for call in download.call_args_list:
             self.assertEqual(call.kwargs['sha256'], setup.CHECKPOINT_SHA256)
             self.assertEqual(call.kwargs['md5'], setup.CHECKPOINT_MD5)
+
+    def test_bandit_training_wrapper_is_normalized_without_weakening_strict_loading(self):
+        from anime_dubber.quality_models import bandit_state_dict
+        tensor = object()
+        self.assertEqual(bandit_state_dict({'state_dict': {'model.band.weight': tensor}}), {'band.weight': tensor})
+        self.assertEqual(bandit_state_dict({'band.weight': tensor}), {'band.weight': tensor})
+        with self.assertRaises(ValueError): bandit_state_dict({'state_dict': {'model.band.weight': tensor, 'band.bias': tensor}})

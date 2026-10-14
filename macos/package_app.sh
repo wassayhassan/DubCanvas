@@ -136,6 +136,7 @@ rm -rf "$ICONSET"
 ditto "$ROOT/anime_dubber" "$BACKEND/anime_dubber"
 ditto "$ROOT/dubcanvas" "$BACKEND/dubcanvas"
 cp "$ROOT/requirements.txt" "$BACKEND/requirements.txt"
+cp "$ROOT/requirements-managed-core.txt" "$BACKEND/requirements-managed-core.txt"
 cp "$ROOT/requirements-cross-platform.txt" "$BACKEND/requirements-cross-platform.txt"
 cp "$ROOT/requirements-premium-voices.txt" "$BACKEND/requirements-premium-voices.txt"
 for QUALITY_REQUIREMENT in "$ROOT"/requirements-quality-*.txt; do

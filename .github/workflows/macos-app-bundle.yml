@@ -25,7 +25,7 @@ jobs:
           test "$target" = "$RUNNER_TEMP/DubCanvas Test.app"
 
       - name: Install packaging tools
-        run: brew install uv ffmpeg rubberband espeak-ng
+        run: brew install uv ffmpeg rubberband espeak-ng deno
 
       - name: Build signed universal update bundle
         run: zsh macos/package_app.sh --no-embed-venv --universal --managed-tools
@@ -60,7 +60,7 @@ jobs:
           export PATH="$PWD/dist/DubCanvas.app/Contents/Resources/tools:/usr/bin:/bin:/usr/sbin:/sbin"
           uv run --no-project --managed-python --python 3.13 python dist/DubCanvas.app/Contents/Resources/backend/tools/managed_setup.py --directory "$RUNNER_TEMP/managed-runtime" --uv "$PWD/dist/DubCanvas.app/Contents/Resources/tools/uv"
           test -f "$RUNNER_TEMP/managed-runtime/core-ready.json"
-          "$RUNNER_TEMP/managed-runtime/core/bin/python" -c 'import kokoro, anime_dubber.application'
+          "$RUNNER_TEMP/managed-runtime/core/bin/python" -c 'import kokoro, yt_dlp, anime_dubber.application'
           "$RUNNER_TEMP/managed-runtime/core/bin/python" - <<'PYCODE'
           import ctypes, os
           library = ctypes.CDLL(os.environ['PHONEMIZER_ESPEAK_LIBRARY'])

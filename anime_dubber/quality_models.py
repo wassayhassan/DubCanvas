@@ -20,6 +20,19 @@ def verify_translation_adapter(path, expected):
         raise ValueError("Hy adapter differs from the configured audited checksum")
     return path
 
+def bandit_state_dict(checkpoint):
+    """Normalize the authors' Lightning wrapper, preserving strict model loading."""
+    state = checkpoint
+    for field in ("state", "state_dict", "model_state_dict"):
+        if isinstance(state, dict) and field in state:
+            state = state[field]
+    if not isinstance(state, dict) or not state or any(not isinstance(key, str) for key in state):
+        raise ValueError("BandIt checkpoint has no valid state dictionary")
+    prefixed = [key.startswith("model.") for key in state]
+    if any(prefixed) and not all(prefixed):
+        raise ValueError("BandIt checkpoint mixes wrapper and model parameter names")
+    return {key.removeprefix("model."): value for key, value in state.items()} if all(prefixed) else state
+
 MODELS = {
     "fallback": {"repo": "mlx-community/whisper-large-v3-mlx", "runtime": "mlx_whisper", "license": "MIT"},
     "asr": {"repo": "mlx-community/FireRedASR2-AED-mlx", "revision": "f3212eacfa49b851130b97c63653c8e06ee09bdb", "runtime": "mlx_audio", "license": "Apache-2.0", "weights_gb": 4.566},

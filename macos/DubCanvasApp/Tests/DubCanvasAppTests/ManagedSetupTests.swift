@@ -9,6 +9,7 @@ final class ManagedSetupTests: XCTestCase {
         XCTAssertNil(ManagedSetup.fingerprint(at: root))
         try Data("numpy==1.26.4\n".utf8).write(to: root.appendingPathComponent("requirements.txt"))
         try Data("torch<2.6\n".utf8).write(to: root.appendingPathComponent("constraints.txt"))
+        try Data("-r requirements.txt\nkokoro==0.9.4\n".utf8).write(to: root.appendingPathComponent("requirements-managed-core.txt"))
         let initial = ManagedSetup.fingerprint(at: root)
         XCTAssertNotNil(initial)
         try Data("torch<2.7\n".utf8).write(to: root.appendingPathComponent("constraints.txt"))

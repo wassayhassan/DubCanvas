@@ -47,9 +47,17 @@ jobs:
           from pathlib import Path
           import os
           import torch
-          from tools.managed_setup import download_checkpoint
+          from tools.managed_setup import download_checkpoint, download_msst, digest_file
+          from anime_dubber.quality_models import options
+          from anime_dubber.quality_worker import load
           path = Path.home() / 'Library/Caches/DubCanvas/checkpoint-multi.ckpt'
           path.parent.mkdir(parents=True, exist_ok=True)
           download_checkpoint(path)
-          torch.load(path, map_location='cpu', weights_only=True)
+          assets = Path(os.environ['RUNNER_TEMP']) / 'separator-model-test'
+          assets.mkdir(exist_ok=True)
+          msst = download_msst(assets)
+          config = msst / 'configs/config_dnr_bandit_v2_mus64.yaml'
+          load('separator', options({'msst_path': str(msst), 'bandit_checkpoint': str(path), 'bandit_config': str(config),
+               'bandit_sha256': digest_file(path), 'bandit_config_sha256': digest_file(config), 'separator_device': 'cpu'}))
+          print('Official separator weights loaded strictly into the pinned model')
           PYCODE

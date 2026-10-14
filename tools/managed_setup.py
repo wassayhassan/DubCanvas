@@ -13,7 +13,6 @@ import urllib.request
 import zipfile
 
 MSST_REVISION = '84b1eac0887756b4f1a9d7a1ff49105939749ed2'
-CORE_EXTRA = 'kokoro==0.9.4'
 CHECKPOINT_SHA256 = 'abcfccf65446752a057f4a302c941479a54b7560ebf8d7bca039d2ea98e64cfc'
 CHECKPOINT_MD5 = 'fea2868787551b0cff36cfcf7c3622a3'
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +49,7 @@ def digest_file(path, algorithm="sha256"):
     return h.hexdigest()
 
 def core_fingerprint():
-    return hashlib.sha256((ROOT / 'requirements.txt').read_bytes() + (ROOT / 'constraints.txt').read_bytes() + CORE_EXTRA.encode()).hexdigest()
+    return hashlib.sha256((ROOT / 'requirements.txt').read_bytes() + (ROOT / 'constraints.txt').read_bytes() + (ROOT / 'requirements-managed-core.txt').read_bytes()).hexdigest()
 
 def atomic_json(path, value):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +85,22 @@ def download_checkpoint(target):
         progress('Retrying checkpoint download from original source')
         download(official, target, md5=CHECKPOINT_MD5, sha256=CHECKPOINT_SHA256)
 
+def download_msst(assets):
+    msst = assets / ('MSST-' + MSST_REVISION)
+    if not (msst / 'inference.py').exists():
+        archive = assets / 'msst.zip'
+        download(f'https://github.com/ZFTurbo/Music-Source-Separation-Training/archive/{MSST_REVISION}.zip', archive)
+        unpack = assets / 'msst-unpack'; unpack.mkdir(exist_ok=True)
+        with zipfile.ZipFile(archive) as z:
+            for item in z.infolist():
+                destination = (unpack / item.filename).resolve()
+                if not destination.is_relative_to(unpack.resolve()): raise RuntimeError('Invalid separation archive path')
+            z.extractall(unpack)
+        extracted = unpack / ('Music-Source-Separation-Training-' + MSST_REVISION)
+        if msst.exists(): shutil.rmtree(msst)
+        extracted.replace(msst); shutil.rmtree(unpack); archive.unlink()
+    return msst
+
 def install_env(uv, directory, version, requirements, env, extra=()):
     python = directory / 'bin/python'
     seeded = directory / '.setup-seeded'
@@ -107,7 +122,7 @@ def provision(root, uv, quality=False):
     except (OSError, ValueError):
         ready = False
     if not ready:
-        core = install_env(uv, root / 'core', '3.11', ROOT / 'requirements.txt', env, (CORE_EXTRA,))
+        core = install_env(uv, root / 'core', '3.11', ROOT / 'requirements-managed-core.txt', env)
     run([core, '-m', 'dubcanvas', '--help'], env=env)
     atomic_json(root / 'core-ready.json', {'fingerprint': core_fingerprint()})
     if not quality: return
@@ -133,19 +148,7 @@ def provision(root, uv, quality=False):
     progress('Checking speaker model access before large model downloads')
     run([paths['torch_python'], '-c', 'from pyannote.audio import Pipeline; Pipeline.from_pretrained("pyannote/speaker-diarization-community-1")'], env=env)
     assets = root / 'models'; assets.mkdir(exist_ok=True)
-    msst = assets / ('MSST-' + MSST_REVISION)
-    if not (msst / 'inference.py').exists():
-        archive = assets / 'msst.zip'
-        download(f'https://github.com/ZFTurbo/Music-Source-Separation-Training/archive/{MSST_REVISION}.zip', archive)
-        unpack = assets / 'msst-unpack'; unpack.mkdir(exist_ok=True)
-        with zipfile.ZipFile(archive) as z:
-            for item in z.infolist():
-                destination = (unpack / item.filename).resolve()
-                if not destination.is_relative_to(unpack.resolve()): raise RuntimeError('Invalid separation archive path')
-            z.extractall(unpack)
-        extracted = unpack / ('Music-Source-Separation-Training-' + MSST_REVISION)
-        if msst.exists(): shutil.rmtree(msst)
-        extracted.replace(msst); shutil.rmtree(unpack); archive.unlink()
+    msst = download_msst(assets)
     checkpoint = assets / 'checkpoint-multi.ckpt'
     download_checkpoint(checkpoint)
     config = msst / 'configs/config_dnr_bandit_v2_mus64.yaml'
@@ -163,13 +166,13 @@ def provision(root, uv, quality=False):
              'from huggingface_hub import snapshot_download; import sys; snapshot_download(sys.argv[1], revision=sys.argv[2] or None, allow_patterns=["*.json","*.safetensors","*.txt","*.model","*.tiktoken","*.npz","*.npy","*.ark","*.yaml"])',
              model['repo'], model.get('revision', '')], env=env)
     progress('Checking speaker model access and separation weights')
-    run([paths['separator_python'], '-c', 'import torch,sys; torch.load(sys.argv[1],map_location="cpu",weights_only=True)', checkpoint], env=env)
     settings = dict(paths, msst_path=str(msst), bandit_config=str(config), bandit_checkpoint=str(checkpoint),
                     bandit_config_sha256=digest_file(config), bandit_sha256=digest_file(checkpoint),
                     translation_model_path=str(model_path), translation_adapter_sha256=HY_ADAPTER_SHA256,
                     voice_engine='qwen', review_provider='local', allow_cloud=False)
     # This script's Python is intentionally stdlib-only; preflight runs in the core environment.
     temp = root / 'quality-pending.json'; atomic_json(temp, settings)
+    run([paths['separator_python'], '-c', 'import json,sys; from anime_dubber.quality_models import options; from anime_dubber.quality_worker import load; load("separator", options(json.load(open(sys.argv[1]))))', temp], env=env)
     run([core, '-c', 'import json,sys; from anime_dubber.quality_models import setup_issues; issues=setup_issues(json.load(open(sys.argv[1]))); print("\\n".join(issues)); sys.exit(bool(issues))', temp], env=env)
     atomic_json(root / 'quality-settings.json', settings); temp.unlink()
     progress('Quality setup complete. Model performance still requires an actual video test.')
