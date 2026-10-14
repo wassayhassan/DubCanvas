@@ -30,11 +30,8 @@ def primitive(value):
 def snapshot(model, q, role):
     from huggingface_hub import snapshot_download
     if role == "translator":
-        path = Path(q["translation_model_path"]).expanduser().resolve()
-        from .quality_models import file_digest
-        adapter = path / "hy_v3.py"
-        if file_digest(adapter) != q["translation_adapter_sha256"]:
-            raise ValueError("Hy adapter checksum differs from the audited configuration")
+        from .quality_models import verify_translation_adapter
+        path = verify_translation_adapter(q["translation_model_path"], q["translation_adapter_sha256"])
         return str(path)
     from tqdm.auto import tqdm
     class DownloadProgress(tqdm):
@@ -67,7 +64,7 @@ def load(role, q):
             _loaded = load_model(model_path)
         elif role == "translator":
             from mlx_lm import load as load_lm
-            _loaded = load_lm(model_path)
+            _loaded = load_lm(model_path, tokenizer_config={"trust_remote_code": False})
         else:
             from mlx_vlm import load as load_vlm
             m, processor = load_vlm(model_path)
@@ -226,6 +223,15 @@ def main():
             payload = json.loads(line)
             with contextlib.redirect_stdout(sys.stderr):
                 result = execute(role, payload["request"], payload["settings"])
+            if "mlx.core" in sys.modules:
+                mx = sys.modules["mlx.core"]
+                counters = {}
+                for name in ("get_peak_memory", "get_active_memory", "get_cache_memory"):
+                    if callable(getattr(mx, name, None)):
+                        counters[name] = int(getattr(mx, name)())
+                print("DUBCANVAS_METADATA " + json.dumps({"role": role,
+                    "mlx_allocator_bytes": counters,
+                    "note": "MLX allocator counters, not system physical footprint"}), flush=True)
             output = {"ok": True, "result": result}
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)

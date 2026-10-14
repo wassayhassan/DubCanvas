@@ -7,12 +7,25 @@ import platform
 import shutil
 from pathlib import Path
 
+# Static source audit at the pinned conversion revision; inference parity is unverified.
+HY_ADAPTER_SHA256 = "0a193c9114f57edd1acc513edd20f86125ec23482a449df59d2987976a69187b"
+
+def verify_translation_adapter(path, expected):
+    path = Path(path).expanduser().resolve()
+    config = json.loads((path / "config.json").read_text(encoding="utf-8"))
+    # MLX-LM executes config.model_file, so hashing a different named file is insufficient.
+    if config.get("model_file") != "hy_v3.py":
+        raise ValueError("Hy config must load exactly the audited hy_v3.py adapter")
+    if not expected or file_digest(path / "hy_v3.py") != expected:
+        raise ValueError("Hy adapter differs from the configured audited checksum")
+    return path
+
 MODELS = {
     "fallback": {"repo": "mlx-community/whisper-large-v3-mlx", "runtime": "mlx_whisper", "license": "MIT"},
     "asr": {"repo": "mlx-community/FireRedASR2-AED-mlx", "revision": "f3212eacfa49b851130b97c63653c8e06ee09bdb", "runtime": "mlx_audio", "license": "Apache-2.0", "weights_gb": 4.566},
     "verifier": {"repo": "mlx-community/Qwen3-ASR-1.7B-bf16", "revision": "e1f6c266914abc5a46e8756e02580f834a6cf8a7", "runtime": "mlx_audio", "license": "Apache-2.0", "weights_gb": 4.076},
     "aligner": {"repo": "mlx-community/Qwen3-ForcedAligner-0.6B-bf16", "revision": "53c8c0e46733eec430e4b53dd6471d0e5dee45f8", "runtime": "mlx_audio", "license": "Apache-2.0", "weights_gb": 1.836},
-    "translator": {"repo": "QwQbb/Hy-MT2-30B-A3B-MLX-8bit", "revision": "b12a2cb66e79411849a0dfdd044e60cf3e5e4c80", "runtime": "mlx_lm", "license": "conversion provenance requires audit", "weights_gb": 31.944},
+    "translator": {"repo": "QwQbb/Hy-MT2-30B-A3B-MLX-8bit", "revision": "b12a2cb66e79411849a0dfdd044e60cf3e5e4c80", "runtime": "mlx_lm", "license": "upstream Apache-2.0; pinned conversion ships Tencent HY Community License", "weights_gb": 31.944},
     "reviewer": {"repo": "mlx-community/Qwen3.8-27B-8bit", "revision": "815b83c0df8ffd1d1b5244cf75fd6ef14fca9ef9", "runtime": "mlx_vlm", "license": "Apache-2.0", "weights_gb": 29.501},
     "tts": {"repo": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16", "revision": "52f4770fd9726457eae3d3b6aa92047a25a10776", "runtime": "mlx_audio", "license": "Apache-2.0", "weights_gb": 4.516},
     "diarizer": {"repo": "pyannote/speaker-diarization-community-1", "runtime": "pyannote", "license": "CC-BY-4.0"},
@@ -24,7 +37,7 @@ DEFAULTS = {
     "separation_chunk_seconds": 12, "separation_context_seconds": 2,
     "msst_path": "", "bandit_config": "", "bandit_checkpoint": "",
     "bandit_sha256": "", "bandit_config_sha256": "", "separator_device": "auto",
-    "translation_model_path": "", "translation_adapter_sha256": "",
+    "translation_model_path": "", "translation_adapter_sha256": HY_ADAPTER_SHA256,
     "review_provider": "local", "cloud_review_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     "cloud_review_model": "qwen3.8-max-0902", "allow_cloud": False,
     "voice_engine": "qwen", "qwen_speaker": "Aiden", "american_female_fallback": True,
@@ -126,13 +139,12 @@ def setup_issues(settings, *, require_platform=True, mode="dub", analysis=False)
     if analysis:
         pass
     elif not q["translation_model_path"] or not q["translation_adapter_sha256"]:
-        issues.append("Audit Hy adapter/license provenance; configure local translation_model_path and adapter SHA-256")
+        issues.append("Configure local translation_model_path and audited adapter SHA-256")
     else:
-        adapter = Path(q["translation_model_path"]).expanduser() / "hy_v3.py"
-        if not adapter.is_file():
-            issues.append("Local Hy model directory is missing hy_v3.py")
-        elif file_digest(adapter) != q["translation_adapter_sha256"]:
-            issues.append("Hy adapter differs from the configured audited checksum")
+        try:
+            verify_translation_adapter(q["translation_model_path"], q["translation_adapter_sha256"])
+        except (OSError, ValueError) as exc:
+            issues.append("Hy adapter preflight: " + str(exc))
     for key, checksum in (("bandit_checkpoint", "bandit_sha256"), ("bandit_config", "bandit_config_sha256")):
         if q[key] and Path(q[key]).is_file() and q[checksum] and file_digest(q[key]) != q[checksum]:
             issues.append(f"{key} does not match its audited checksum")

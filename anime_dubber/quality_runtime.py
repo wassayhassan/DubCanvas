@@ -88,12 +88,24 @@ class Worker:
     def call(self, request):
         from .core import PipelineError
         self.runner.check_cancel()
-        self.proc.stdin.write(json.dumps({"settings": self.settings, "request": request}, ensure_ascii=False) + "\n")
-        self.proc.stdin.flush()
         deadline = time.monotonic() + self.settings["worker_timeout"]
+        # Pipe backpressure must be covered by the same deadline as inference.
+        # Killing the child during context cleanup releases a blocked writer.
+        payload = json.dumps({"settings": self.settings, "request": request}, ensure_ascii=False) + "\n"
+        write_errors = queue.Queue()
+        def send():
+            try:
+                self.proc.stdin.write(payload)
+                self.proc.stdin.flush()
+            except (OSError, ValueError) as exc:
+                write_errors.put(exc)
+        self.writer = threading.Thread(target=send, daemon=True)
+        self.writer.start()
         next_memory = 0
         while True:
             self.runner.check_cancel()
+            if not write_errors.empty():
+                raise PipelineError(f"{self.role} worker request failed: {write_errors.get()}")
             now = time.monotonic()
             if now > deadline:
                 raise PipelineError(f"{self.role} worker exceeded its deadline; completed checkpoints retained")
@@ -110,6 +122,7 @@ class Worker:
                 result = json.loads(line.removeprefix("DUBCANVAS_RESULT "))
                 if not result["ok"]:
                     raise PipelineError(f"{self.role}: {result['error']}")
+                self._check_memory()
                 return result["result"]
             if line.startswith("DUBCANVAS_METADATA "):
                 getattr(self.runner, "diagnostic", lambda *a, **k: None)("Model worker runtime", **json.loads(line.removeprefix("DUBCANVAS_METADATA ")))
@@ -134,10 +147,12 @@ class Worker:
         if rss > self.settings["worker_memory_gb"] * 1e9:
             raise PipelineError(f"{self.role} exceeded worker RSS budget; reduce context/chunk size")
         used = psutil.virtual_memory().total - psutil.virtual_memory().available
+        swap = psutil.swap_memory().used
         if sys.platform == "darwin" and used > self.settings["system_memory_gb"] * 1e9:
             raise PipelineError("System memory budget exceeded; checkpoint retained. Close other apps or reduce context")
         getattr(self.runner, "diagnostic", lambda *a, **k: None)("Memory observation", role=self.role, rss_bytes=rss,
-            system_used_bytes=used, note="RSS/system observation; Metal physical-footprint validation still required")
+            system_used_bytes=used, system_swap_bytes=swap,
+            note="RSS/system observation; Metal physical-footprint validation still required")
 
     def __exit__(self, *args):
         if self.proc:
@@ -157,6 +172,8 @@ class Worker:
                 self.proc.wait()
             if hasattr(self, "reader"):
                 self.reader.join(timeout=1)
+            if hasattr(self, "writer"):
+                self.writer.join(timeout=1)
             for stream in (self.proc.stdin, self.proc.stdout):
                 if stream:
                     stream.close()

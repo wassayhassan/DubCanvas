@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import tempfile
 import uuid
@@ -706,6 +707,7 @@ class ApplicationService:
             self._emit(AppEvent("finished", {"status": "failed"}, record.id))
         finally:
             diagnostics.write("Job finished", details={"status": record.status, "last_stage": diagnostics.stage,
+                              "stage_duration_seconds": round(time.monotonic() - diagnostics.stage_started, 3),
                               "result": record.result, "error": record.error})
             record.ended_at = datetime.now(timezone.utc).isoformat()
             record.runner = None

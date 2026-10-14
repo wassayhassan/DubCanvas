@@ -16,7 +16,7 @@ Use native ARM64 Python 3.13 plus Python 3.12 for the diarization/Kokoro environ
 python3.13 tools/install_quality.py --directory "$HOME/DubCanvasQualityEnvironments"
 ```
 
-The installer creates five separate environments, runs pip check and saves each environment's exact resolved lock. It refuses to overwrite environments and does not download weights or execute the Hy adapter. The input requirement files pin the selected core runtime versions; the generated resolved locks freeze their transitive dependencies on the target Mac. Installation has NOT been tested on that Mac yet.
+The installer creates five separate environments, runs pip check and native API/Metal probes, and saves each environment's exact resolved lock. Each install/check has a configurable `--step-timeout` (default 1800 seconds), with readable `<role>.install.log` output. Successful worker paths are saved after each role; a later failure does not discard them. Retry remaining roles with `--role` and a new environment directory. Existing environments are never overwritten. It does not download weights or execute the Hy adapter. The input requirement files pin the selected core runtime versions; the generated resolved locks freeze their transitive dependencies on the target Mac. Installation has NOT been tested on that Mac yet.
 
 - Audio: MLX 0.31.2, MLX Audio 0.5.9, Whisper fallback.
 - Translation: MLX 0.31.2 / MLX-LM 0.31.3, matching the Hy adapter's documented smoke-test runtime.
@@ -30,7 +30,7 @@ Obtain the audited MSST model code at commit `84b1eac0887756b4f1a9d7a1ff49105939
 
 BandIt code is Apache-2.0, weights CC-BY-SA-4.0. pyannote weights require accepting the model access conditions; configure `HF_TOKEN` for the initial download. Telemetry is disabled in the worker environment.
 
-Hy's conversion includes executable `hy_v3.py`. Audit that adapter and resolve the conversion's licensing metadata conflict with the checked official upstream Apache license before distributing it. Supply a local model directory and the adapter checksum. DubCanvas refuses to auto-execute an unaudited downloaded Hy adapter. This audit/distribution decision is a documented blocker to a packaged one-click install, not a silent fallback.
+The pinned Hy adapter has now received a static source audit; its reviewed SHA-256 is the default checksum. Supply a local model directory. Preflight checks that `config.json` selects exactly `hy_v3.py`, checks its hash, and loads the tokenizer with remote code disabled. This does not establish model parity. The pinned conversion includes the older Tencent HY Community license despite upstream's later Apache-2.0 license update; redistribution remains blocked pending clarification. See [the audit evidence](hy-adapter-audit.md).
 
 Create a quality JSON file with the worker paths from `worker-paths.json` and your audited asset paths/checksums. Complete example keys are available through `anime_dubber.quality_models.DEFAULTS`; `tools/write_quality_settings.py` exports them. The UI has dedicated path controls and an advanced JSON editor.
 
@@ -81,3 +81,14 @@ Local tests exercise real process RPC/deadlines, configuration compatibility, co
 Before promotion run a held-out 60–90-minute cultivation corpus with bilingual annotations and a full-episode soak on the M5 Max. Compare FireRed, Qwen and Whisper CER/critical names/coverage; score translation omissions, negation and realm consistency; blind-test casting/expression/accent; check source leakage/effects damage; record timing, processing time, physical memory and swap. The validation manifest/harness is in `tools/evaluate_quality.py`. Human quality fields remain unavailable until bilingual/listening raters supply them; the harness never invents them.
 
 No model changes have been benchmarked on the user's Mac, and the experimental profile has not been promoted to the app default. See the final checklist for blockers and observed test results.
+
+## Real model probes and failure-preserving evaluation
+
+Run individual model requests on the Mac before a full episode. `tools/probe_quality_models.py` uses the same isolated worker protocol and memory/deadline limits as the application; a passing import test is not substituted for inference. Supply a manifest with `probes`, each containing a `role` and the production `request`. For example, Mandarin ASR uses `{"role":"asr","request":{"audio":"/absolute/path/to/mandarin.wav"}}`; alignment uses `audio`, `text` and `language`; Qwen speech uses `text`, `speaker`, `instruct` and an `output` WAV path. Translation/review take `prompt`. The script checks returned text/spans/audio structure, saves logs and results, then continues independent probes if one fails. It never calls cloud services.
+
+```sh
+python tools/probe_quality_models.py model-requests.json --settings quality-settings.json --output model-probe-results
+python tools/evaluate_quality.py annotated-clips.json --settings quality-settings.json --output corpus-results
+```
+
+The corpus manifest contains a nonempty `clips` list, with `source`, optional `gold_source_srt`, `expected_terms`, `series_id`, and human scores. A failed pipeline run saves partial artifact references and its error, and does not abort other clips. Every completed clip updates `evaluation.json`. Reports include stage wall time, sampled worker RSS, system memory/swap and MLX peak allocator counters when available. These counters are separate: none proves full unified-memory physical footprint or M5 Max performance. Human fidelity/voice/background scores remain unsupplied until actual raters provide them. Empty manifests fail rather than producing a misleading success.
