@@ -46,7 +46,12 @@ def bundle(destination):
             subprocess.run(['install_name_tool', '-id', '@loader_path/' + binary.name, str(binary)], check=True)
     # Keep formula metadata and available notices with the distributed tools.
     notices = destination / 'licenses'; notices.mkdir(exist_ok=True)
-    for formula in ('uv', 'ffmpeg', 'rubberband', 'espeak-ng'):
+    formulae = {'uv', 'ffmpeg', 'rubberband', 'espeak-ng'}
+    for source in copied.values():
+        parts = source.parts
+        if 'Cellar' in parts:
+            formulae.add(parts[parts.index('Cellar') + 1])
+    for formula in sorted(formulae):
         metadata = json.loads(command('brew', 'info', '--json=v2', formula))
         (notices / (formula + '.json')).write_text(json.dumps(metadata, indent=2))
         prefix = Path(command('brew', '--prefix', formula))
@@ -54,6 +59,12 @@ def bundle(destination):
             if candidate.is_file() and candidate.name.lower().startswith(('license', 'copying', 'notice')):
                 name = formula + '-' + str(candidate.relative_to(prefix)).replace('/', '-')
                 shutil.copy2(candidate, notices / name)
+    for binary in seen:
+        for line in command('otool', '-L', str(binary)).splitlines()[1:]:
+            dependency = line.strip().split(' (')[0]
+            if dependency.startswith(('/usr/lib/', '/System/Library/')): continue
+            if not dependency.startswith('@loader_path/') or not (binary.parent / dependency.removeprefix('@loader_path/')).exists():
+                raise RuntimeError(f'Unresolved portable dependency {dependency} in {binary.name}')
     (destination / 'provenance.json').write_text(json.dumps(provenance, indent=2))
     for tool in ('uv', 'ffmpeg', 'ffprobe', 'rubberband'):
         subprocess.run([str(destination / tool), '--version' if tool in ('uv', 'rubberband') else '-version'], check=True, stdout=subprocess.DEVNULL)

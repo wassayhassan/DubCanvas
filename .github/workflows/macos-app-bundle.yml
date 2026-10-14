@@ -54,11 +54,19 @@ jobs:
         run: |
           export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/managed-runtime/python"
           export UV_CACHE_DIR="$RUNNER_TEMP/managed-runtime/cache"
+          export PHONEMIZER_ESPEAK_LIBRARY="$PWD/dist/DubCanvas.app/Contents/Resources/tools/lib/libespeak-ng.1.dylib"
+          export ESPEAK_DATA_PATH="$PWD/dist/DubCanvas.app/Contents/Resources/tools/share/espeak-ng-data"
           export PYTHONPATH="$PWD/dist/DubCanvas.app/Contents/Resources/backend"
           export PATH="$PWD/dist/DubCanvas.app/Contents/Resources/tools:/usr/bin:/bin:/usr/sbin:/sbin"
           uv run --no-project --managed-python --python 3.13 python dist/DubCanvas.app/Contents/Resources/backend/tools/managed_setup.py --directory "$RUNNER_TEMP/managed-runtime" --uv "$PWD/dist/DubCanvas.app/Contents/Resources/tools/uv"
           test -f "$RUNNER_TEMP/managed-runtime/core-ready.json"
           "$RUNNER_TEMP/managed-runtime/core/bin/python" -c 'import kokoro, anime_dubber.application'
+          "$RUNNER_TEMP/managed-runtime/core/bin/python" - <<'PYCODE'
+          import ctypes, os
+          library = ctypes.CDLL(os.environ['PHONEMIZER_ESPEAK_LIBRARY'])
+          library.espeak_Initialize.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+          assert library.espeak_Initialize(2, 0, os.environ['ESPEAK_DATA_PATH'].encode(), 0) > 0
+          PYCODE
 
       - name: Test update verification and staging
         run: swift test --package-path macos/DubCanvasApp

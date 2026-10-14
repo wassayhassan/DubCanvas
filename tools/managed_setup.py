@@ -14,7 +14,10 @@ import zipfile
 
 MSST_REVISION = '84b1eac0887756b4f1a9d7a1ff49105939749ed2'
 CORE_EXTRA = 'kokoro==0.9.4'
+CHECKPOINT_SHA256 = 'abcfccf65446752a057f4a302c941479a54b7560ebf8d7bca039d2ea98e64cfc'
+CHECKPOINT_MD5 = 'fea2868787551b0cff36cfcf7c3622a3'
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 _child = None
 
 def progress(message):
@@ -40,8 +43,8 @@ def interrupted(signum, frame):
         os.killpg(_child.pid, signal.SIGTERM)
     raise KeyboardInterrupt
 
-def digest_file(path):
-    h = hashlib.sha256()
+def digest_file(path, algorithm="sha256"):
+    h = hashlib.new(algorithm)
     with Path(path).open('rb') as f:
         for block in iter(lambda: f.read(1024 * 1024), b''): h.update(block)
     return h.hexdigest()
@@ -54,9 +57,11 @@ def atomic_json(path, value):
     temp = path.with_suffix('.tmp')
     temp.write_text(json.dumps(value, indent=2)); temp.replace(path)
 
-def download(url, target, *, md5=None):
+def download(url, target, *, md5=None, sha256=None):
     target = Path(target)
-    if target.exists() and (not md5 or hashlib.md5(target.read_bytes()).hexdigest() == md5): return
+    def verified(path):
+        return (not md5 or digest_file(path, 'md5') == md5) and (not sha256 or digest_file(path) == sha256)
+    if target.exists() and verified(target): return
     partial = target.with_suffix(target.suffix + '.partial')
     progress('Downloading ' + target.name)
     try:
@@ -65,14 +70,28 @@ def download(url, target, *, md5=None):
             while block := response.read(1024 * 1024):
                 output.write(block); count += len(block)
                 if count % (16 * 1024 * 1024) < len(block): progress(f'{target.name}: {count // (1024 * 1024)} MB downloaded')
-        if md5 and hashlib.md5(partial.read_bytes()).hexdigest() != md5:
+        if not verified(partial):
             raise RuntimeError('Official checkpoint checksum mismatch')
         partial.replace(target)
     finally: partial.unlink(missing_ok=True)
 
+def download_checkpoint(target):
+    # Mirror bytes were compared with the original authors' published MD5.
+    # Pin both the mirror revision and the verified content SHA-256.
+    mirror = 'https://huggingface.co/jsoncx/bandit-v2/resolve/fde0ff714b879259f3f436a0eb9046626f82a880/checkpoint-multi.ckpt'
+    official = 'https://zenodo.org/records/12701995/files/checkpoint-multi.ckpt?download=1'
+    try:
+        download(mirror, target, md5=CHECKPOINT_MD5, sha256=CHECKPOINT_SHA256)
+    except (OSError, RuntimeError):
+        progress('Retrying checkpoint download from original source')
+        download(official, target, md5=CHECKPOINT_MD5, sha256=CHECKPOINT_SHA256)
+
 def install_env(uv, directory, version, requirements, env, extra=()):
     python = directory / 'bin/python'
-    if not python.exists(): run([uv, 'venv', '--managed-python', '--python', version, '--seed', directory], env=env)
+    seeded = directory / '.setup-seeded'
+    if not python.exists() or not seeded.exists():
+        run([uv, 'venv', '--managed-python', '--python', version, '--seed', '--allow-existing', directory], env=env)
+        seeded.write_text(version)
     run([uv, 'pip', 'install', '--python', python, '-r', requirements, *extra], env=env)
     run([python, '-m', 'pip', 'check'], env=env)
     return python
@@ -126,7 +145,7 @@ def provision(root, uv, quality=False):
         if msst.exists(): shutil.rmtree(msst)
         extracted.replace(msst); shutil.rmtree(unpack); archive.unlink()
     checkpoint = assets / 'checkpoint-multi.ckpt'
-    download('https://zenodo.org/records/12701995/files/checkpoint-multi.ckpt?download=1', checkpoint, md5='fea2868787551b0cff36cfcf7c3622a3')
+    download_checkpoint(checkpoint)
     config = msst / 'configs/config_dnr_bandit_v2_mus64.yaml'
     # Use the isolated model runtime for Hub downloads, keeping provisioning stdlib-only.
     translator = MODELS['translator']

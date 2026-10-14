@@ -33,6 +33,7 @@ class ManagedSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             env = Path(td) / 'worker'; (env / 'bin').mkdir(parents=True)
             python = env / 'bin/python'; python.touch()
+            (env / '.setup-seeded').write_text('3.13')
             with patch.object(setup, 'run') as run:
                 setup.install_env('uv', env, '3.13', 'requirements.txt', {})
             self.assertEqual(run.call_count, 2)
@@ -52,3 +53,31 @@ class ManagedSetupTests(unittest.TestCase):
             with patch.object(setup, 'install_env') as install, patch.object(setup, 'run'):
                 setup.provision(root, Path('uv'))
             install.assert_not_called()
+
+    def test_incomplete_seed_is_repaired_without_deleting_environment(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = Path(td) / 'worker'; (env / 'bin').mkdir(parents=True)
+            (env / 'bin/python').touch()
+            (env / 'keep').write_text('completed download')
+            with patch.object(setup, 'run') as run:
+                setup.install_env('uv', env, '3.13', 'requirements.txt', {})
+            self.assertIn('--allow-existing', run.call_args_list[0].args[0])
+            self.assertEqual((env / 'keep').read_text(), 'completed download')
+            self.assertTrue((env / '.setup-seeded').exists())
+
+    def test_standalone_installer_can_import_bundled_backend_without_pythonpath(self):
+        import subprocess
+        import sys
+        script = Path(setup.__file__).resolve()
+        code = "import runpy,sys; runpy.run_path(sys.argv[1],run_name='installer_module'); import anime_dubber.quality_models; print('bundled backend found')"
+        result = subprocess.run([sys.executable, '-I', '-c', code, str(script)], capture_output=True, text=True, check=True)
+        self.assertIn('bundled backend found', result.stdout)
+
+    def test_checkpoint_mirror_fallback_keeps_both_integrity_checks(self):
+        with patch.object(setup, 'download', side_effect=[OSError('mirror offline'), None]) as download:
+            setup.download_checkpoint(Path('weights'))
+        self.assertEqual(download.call_count, 2)
+        self.assertIn('zenodo.org', download.call_args.args[0])
+        for call in download.call_args_list:
+            self.assertEqual(call.kwargs['sha256'], setup.CHECKPOINT_SHA256)
+            self.assertEqual(call.kwargs['md5'], setup.CHECKPOINT_MD5)
