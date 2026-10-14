@@ -40,6 +40,9 @@ struct AppPreferences: Codable, Equatable {
     var dubVolume = 1.15
     var backgroundDucking = false
 
+    var pipelineProfile: String? = "legacy"
+    var qualitySettingsJSON: String? = "{}"
+
     static let defaultsKey = "AnimeDubberPreferences.v3"
 
     static func load() -> AppPreferences {
@@ -142,4 +145,6 @@ struct SettingsSnapshot: Equatable {
     let backgroundVolume: Double
     let dubVolume: Double
     let backgroundDucking: Bool
+    let pipelineProfile: String
+    let qualitySettingsJSON: String
 }

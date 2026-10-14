@@ -19,6 +19,10 @@ struct SettingsView: View {
                 .tabItem { Label("Providers", systemImage: "cpu") }
                 .tag("providers")
 
+            QualitySettingsView()
+                .tabItem { Label("Quality Pipeline", systemImage: "waveform.badge.magnifyingglass") }
+                .tag("quality")
+
             backend
                 .tabItem { Label("Backend", systemImage: "server.rack") }
                 .tag("backend")
@@ -95,6 +99,12 @@ struct SettingsView: View {
 
     private var providers: some View {
         Form {
+            if state.pipelineProfile == "quality_v1" {
+                Section {
+                    Text("Quality v1 uses the models and mandatory meaning review in Quality Pipeline. The provider choices below apply to the Existing providers profile; ElevenLabs credentials are shared.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Speech Recognition") {
                 Picker("ASR provider", selection: $state.asrProvider) {
                     ForEach(ASRProvider.allCases) { provider in

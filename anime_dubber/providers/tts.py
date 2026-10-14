@@ -134,7 +134,7 @@ def synthesize_piper(
         cancel_check()
 
     safe_rate = max(80, min(450, int(rate)))
-    length_scale = max(0.55, min(1.80, 205.0 / safe_rate))
+    length_scale = max(1.0 / 1.5, min(1.80, 205.0 / safe_rate))
     cmd = [
         *base_cmd,
         "--model", str(model),
@@ -415,7 +415,7 @@ def synthesize_kokoro(
         cancel_check()
 
     safe_rate = max(80, min(450, int(rate)))
-    speed = max(0.55, min(1.80, safe_rate / 205.0))
+    speed = max(0.55, min(1.50, safe_rate / 205.0))
     selected_voice = str(voice or "af_heart").strip() or "af_heart"
     pipeline = _load_kokoro(lang_code)
 

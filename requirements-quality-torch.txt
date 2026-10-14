@@ -1,0 +1,10 @@
+# Isolated Python 3.12: Kokoro 0.9.4 does not support Python 3.13.
+torch==2.9.1
+torchaudio==2.9.1
+pyannote.audio==4.0.7
+torchcodec==0.8.1
+numpy>=2,<3
+soundfile==0.14.0
+psutil==7.2.2
+kokoro==0.9.4
+librosa>=0.11,<0.12

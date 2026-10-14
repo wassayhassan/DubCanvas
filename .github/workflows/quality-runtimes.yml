@@ -1,0 +1,37 @@
+name: Quality runtime dependency resolution
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  resolve:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: audio
+            python: '3.13'
+          - role: translation
+            python: '3.13'
+          - role: review
+            python: '3.13'
+          - role: separator
+            python: '3.13'
+          - role: torch
+            python: '3.12'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Require native Apple Silicon runner
+        run: python -c 'import platform; assert platform.machine() == "arm64", "Quality dependency checks require an ARM64 runner"'
+      - name: Resolve isolated runtime without model downloads
+        run: python -m pip install --dry-run --ignore-installed -r requirements-quality-${{ matrix.role }}.txt
+      - name: Install and check native runtime
+        run: |
+          python -m pip install -r requirements-quality-${{ matrix.role }}.txt
+          python -m pip check
+      - name: Smoke-test APIs without model weights
+        run: python tools/smoke_quality_runtime.py ${{ matrix.role }}

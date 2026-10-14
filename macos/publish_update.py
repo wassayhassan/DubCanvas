@@ -12,7 +12,7 @@ def run(*args):
 def main():
     sha = os.environ["GITHUB_SHA"]
     repository = os.environ["GITHUB_REPOSITORY"]
-    required = {"Backend boundary tests", "SwiftUI shell build"}
+    required = {"Backend boundary tests", "SwiftUI shell build", "Quality runtime dependency resolution"}
     for _ in range(80):
         runs = json.loads(run("gh", "api", f"repos/{repository}/actions/runs?head_sha={sha}&event=push&per_page=100"))["workflow_runs"]
         latest = {}

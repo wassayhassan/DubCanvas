@@ -42,6 +42,20 @@ _STAGE_PATTERNS = [
 
 def progress_to_event(message: str, job_id: str) -> AppEvent:
     raw = str(message)
+    if raw.startswith("__MODEL_DOWNLOAD__|"):
+        _, done, total, model = raw.split("|", 3)
+        count, maximum = int(done), int(total)
+        return AppEvent("progress", {"stage": "loading_models", "title": f"Downloading {model}",
+            "completed": count, "total": maximum, "fraction": count / maximum if maximum else None,
+            "detail": "File progress; first download may take time"}, job_id)
+    quality_match = re.search(r"^(Transcription (?:asr|verifier)|Meaning review|Speech quality|Separating stems|LLM translation):\s*(\d+)\s*/\s*(\d+)", raw)
+    if quality_match:
+        label, completed, total = quality_match.groups()
+        stage = {"Meaning review": "reviewing", "Speech quality": "speech_quality",
+                 "Separating stems": "separating_stems", "LLM translation": "translating"}.get(label, "transcribing")
+        total = max(1, int(total))
+        return AppEvent("progress", {"stage": stage, "title": raw, "completed": int(completed),
+                         "total": total, "fraction": int(completed) / total}, job_id)
     if raw.startswith("__DOWNLOAD_PROGRESS__|"):
         parts = raw.split("|")
         try:

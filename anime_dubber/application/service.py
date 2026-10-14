@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import tempfile
 import uuid
@@ -67,6 +68,11 @@ def config_from_dict(payload: Dict[str, Any]) -> Config:
     accepted so the backend can evolve without breaking cached callers.
     """
     data = dict(payload or {})
+    profile = str(data.get("pipeline_profile") or "legacy")
+    if profile not in {"legacy", "quality_v1"}:
+        raise ValueError("Unknown pipeline profile")
+    from ..quality_models import options
+    quality = options(data.get("quality_settings")) if profile == "quality_v1" else dict(data.get("quality_settings") or {})
     audio = dict(data.get("audio") or {})
     speaker = dict(data.get("speaker_analysis") or {})
     tts = data.get("tts")
@@ -106,7 +112,7 @@ def config_from_dict(payload: Dict[str, Any]) -> Config:
     raw_voice_overrides = data.get("voice_overrides") or {}
     if not isinstance(raw_voice_overrides, dict):
         raise ValueError("Voice overrides must be a speaker-to-settings mapping")
-    allowed_voice_fields = {"tts_provider", "macos_voice", "kokoro_voice", "reference_audio", "elevenlabs_voice_id"}
+    allowed_voice_fields = {"tts_provider", "macos_voice", "kokoro_voice", "reference_audio", "elevenlabs_voice_id", "qwen_speaker"}
     voice_overrides = {}
     for speaker_id, settings in raw_voice_overrides.items():
         if not isinstance(speaker_id, str) or not isinstance(settings, dict):
@@ -121,6 +127,8 @@ def config_from_dict(payload: Dict[str, Any]) -> Config:
     return Config(
         source=source,
         output_dir=Path(output_dir).expanduser(),
+        pipeline_profile=profile,
+        quality_settings=quality,
         mode=str(data.get("mode") or "dub"),
         target_language=target_language,
         source_language=source_language,
@@ -240,6 +248,12 @@ class ApplicationService:
             },
         }
 
+    def quality_check(self, settings: dict) -> dict:
+        from ..quality_models import options, setup_issues
+        q = options(settings)
+        issues = setup_issues(q)
+        return {"ready_for_smoke_test": not issues, "hardware_verified": False, "issues": issues, "models": q["models"]}
+
     def system_check(self) -> dict:
         caps = self.capabilities()
         checks = []
@@ -336,6 +350,16 @@ class ApplicationService:
 
     def validate_job_setup(self, config: Config, *, analysis: bool = False) -> None:
         """Reject missing selected providers before a long job creates a version."""
+        if config.pipeline_profile == "quality_v1":
+            from ..quality_models import setup_issues
+            issues = setup_issues(config.quality_settings, mode=config.mode, analysis=analysis)
+            if config.target_language != "en" or config.source_language not in {"zh", "auto"}:
+                issues.append("Quality v1 currently supports Chinese-to-English")
+            if issues:
+                raise ValueError("Quality setup needed: " + "; ".join(issues))
+            if not is_url(config.source):
+                validate_media_streams(Path(config.source).expanduser(), CommandRunner())
+            return
         from ..providers.asr import resolve_asr_provider
         caps = self.capabilities()["providers"]
         missing = [tool for tool in ("ffmpeg", "ffprobe") if not shutil.which(tool)]
@@ -683,6 +707,7 @@ class ApplicationService:
             self._emit(AppEvent("finished", {"status": "failed"}, record.id))
         finally:
             diagnostics.write("Job finished", details={"status": record.status, "last_stage": diagnostics.stage,
+                              "stage_duration_seconds": round(time.monotonic() - diagnostics.stage_started, 3),
                               "result": record.result, "error": record.error})
             record.ended_at = datetime.now(timezone.utc).isoformat()
             record.runner = None
@@ -908,6 +933,8 @@ class ApplicationService:
         saved = update_character_override(Path(path).expanduser(), character_id, updates)
         character_path = Path(path).expanduser().resolve()
         key = character_path.name.removesuffix("_characters.json")
+        if character_path.name.endswith("_quality_characters.json"):
+            key = character_path.name.removesuffix("_quality_characters.json")
         if character_path.name.endswith("_characters.json"):
             store = ProjectStore(character_path.parent, "placeholder")
             store.project_id = key
@@ -921,6 +948,18 @@ class ApplicationService:
 
         settings = dict(settings or {})
         provider = str(settings.get("provider") or "macos").strip().lower()
+        if settings.get("pipeline_profile") == "quality_v1" and settings.get("provider_inherited") and provider == "qwen":
+            from ..quality_models import options
+            if options(settings.get("quality_settings"))["american_female_fallback"] and settings.get("voice_class") == "female":
+                provider = "kokoro"
+        if provider in {"qwen", "index_clone"} or (settings.get("pipeline_profile") == "quality_v1" and provider == "kokoro"):
+            with self._lock:
+                if any(job.status in {"queued", "running"} for job in self._jobs.values()):
+                    raise ValueError("Pause processing before model voice preview; saved work is preserved")
+        if settings.get("pipeline_profile") == "quality_v1" and provider == "elevenlabs":
+            from ..quality_models import options
+            if not options(settings.get("quality_settings"))["allow_cloud"]:
+                raise ValueError("Cloud preview text upload is disabled")
         clean_text = str(settings.get("text") or "").strip() or "This is the selected character speaking in English."
         rate = max(80, min(450, int(settings.get("rate") or 205)))
 
@@ -957,7 +996,22 @@ class ApplicationService:
         preview_path = Path(tempfile.gettempdir()) / f"animedubber_preview_{uuid.uuid4().hex}{suffix}"
         runner = CommandRunner()
 
-        if provider == "chatterbox":
+        if provider in {"qwen", "index_clone"} or (settings.get("pipeline_profile") == "quality_v1" and provider == "kokoro"):
+            from ..quality_models import options
+            from ..quality_runtime import Worker
+            q = options(settings.get("quality_settings"))
+            if provider == "index_clone" and not q["reference_consent"]:
+                raise ValueError("Reference cloning requires explicit consent")
+            from ..providers.tts import automatic_kokoro_voice
+            selected_voice = str(settings.get("kokoro_voice") or "auto")
+            if selected_voice == "auto":
+                selected_voice = automatic_kokoro_voice(settings)
+            with Worker({"qwen": "tts", "kokoro": "kokoro", "index_clone": "index_clone"}[provider], q, runner) as worker:
+                worker.call({"text": clean_text, "speaker": str(settings.get("qwen_speaker") or q["qwen_speaker"]),
+                    "voice": selected_voice,
+                    "instruct": "Natural expressive American English at normal speed.",
+                    "reference": str(settings.get("reference_audio") or ""), "output": str(preview_path)})
+        elif provider == "chatterbox":
             from ..providers.tts import synthesize_chatterbox
             synthesize_chatterbox(
                 clean_text,

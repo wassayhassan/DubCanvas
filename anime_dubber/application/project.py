@@ -274,12 +274,17 @@ class ProjectStore:
             self._update_analysis_fingerprint(payload, kind, path)
         elif kind == "character_map":
             shared_map = self.output_dir / f"{self.project_id}_characters.json"
+            try:
+                if json.loads(Path(path).read_text(encoding="utf-8")).get("pipeline_profile") == "quality_v1":
+                    shared_map = self.output_dir / f"{self.project_id}_quality_characters.json"
+            except (OSError, ValueError, AttributeError):
+                pass
             self._update_analysis_fingerprint(payload, kind, str(shared_map if shared_map.exists() else path))
         payload.setdefault("artifacts", {})[kind] = path
         if kind in {"source_srt", "chinese_srt"}:
             payload["source_language"] = language
         if kind.endswith("_srt") or kind.endswith("_vtt") or kind == "review_report":
-            source_caption = kind in {"source_srt", "source_vtt", "chinese_srt", "chinese_vtt"}
+            source_caption = kind in {"source_srt", "source_vtt", "chinese_srt", "chinese_vtt", "source_provisional_srt", "source_provisional_vtt"}
             key = f"source:{language}" if source_caption else (f"{version_id}:{language}" if version_id else language)
             subtitle = payload.setdefault("subtitles", {}).setdefault(key, {
                 "language": language, "created_at": _now(), "artifacts": {},

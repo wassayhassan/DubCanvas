@@ -26,14 +26,14 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg rubberband-cli
 
       - name: Source preflight
         run: python verify_source.py
 
       - name: Install small audio test dependencies
         run: |
-          python -m pip install -c constraints.txt numpy soundfile opencv-python-headless
+          python -m pip install -c constraints.txt numpy soundfile opencv-python-headless psutil==7.2.2
           python -m pip check
 
       - name: Resolve complete macOS backend and voice dependencies

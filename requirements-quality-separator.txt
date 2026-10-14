@@ -1,0 +1,10 @@
+# BandIt imports only its model tree, not MSST's unrelated CUDA/UI/training stack.
+torch==2.9.1
+torchaudio==2.9.1
+pytorch-lightning>=2.4,<3
+omegaconf>=2.3,<3
+einops==0.8.1
+numpy>=2,<3
+librosa>=0.11,<0.12
+soundfile==0.14.0
+psutil==7.2.2

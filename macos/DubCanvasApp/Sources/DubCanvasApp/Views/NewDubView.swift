@@ -7,6 +7,11 @@ struct NewDubView: View {
     @State private var voiceChoicesExpanded = false
 
     private var configurationProblem: String? {
+        if state.pipelineProfile == "quality_v1" {
+            if state.targetLanguage != "en" { return "Quality v1 supports Chinese-to-English. Choose existing providers for other languages." }
+            if state.parsedQualitySettings == nil { return "Quality settings must be valid JSON. Open Settings → Quality Pipeline." }
+            return nil
+        }
         if state.outputMode == .dub && state.targetLanguage != "en" {
             if state.translationProvider == .whisper {
                 return "Whisper direct translation only supports English. Choose a local LLM or Ollama."
@@ -38,8 +43,20 @@ struct NewDubView: View {
                 header
                 identitySection
                 if state.outputMode == .dub { automaticSetup }
-                DisclosureGroup("Advanced processing settings", isExpanded: $pipelineExpanded) {
-                    pipelineSection
+                if state.pipelineProfile == "quality_v1" {
+                    GroupBox("Quality Pipeline · Experimental") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("FireRed + Qwen ASR → Hy-MT2 translation → independent Qwen3.8 meaning review → expressive preset speech")
+                            Text("Complete subtitles before voices. No overlapping fallback. Maximum speech acceleration 1.5×. Exact model overrides and worker environments are in Settings → Quality Pipeline.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Check Quality Setup") { state.checkQualitySetup() }
+                            if !state.qualitySetupReport.isEmpty { Text(state.qualitySetupReport).font(.caption).textSelection(.enabled) }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    DisclosureGroup("Advanced processing settings", isExpanded: $pipelineExpanded) {
+                        pipelineSection
+                    }
                 }
                 if state.outputMode == .dub {
                     DisclosureGroup("Speaker voices for this version", isExpanded: $voiceChoicesExpanded) {
@@ -331,7 +348,7 @@ struct NewDubView: View {
         HStack {
             Spacer()
 
-            if pipelineExpanded {
+            if pipelineExpanded || state.pipelineProfile == "quality_v1" {
                 Button("Analyze Characters Only") {
                     state.startJob(analysis: true)
                 }
@@ -363,16 +380,25 @@ struct NewDubView: View {
                             Text("Chatterbox").tag("chatterbox")
                             if state.targetLanguage == "en" {
                                 Text("Kokoro").tag("kokoro")
+                                if state.pipelineProfile == "quality_v1" {
+                                    Text("Qwen preset").tag("qwen")
+                                    Text("IndexTTS clone").tag("index_clone")
+                                }
                                 Text("macOS Voice").tag("macos")
                             }
                             Text("ElevenLabs").tag("elevenlabs")
                         }
                         let provider = state.versionVoiceOverrides[speaker.id]?["tts_provider"] ?? "inherit"
+                        if provider == "qwen" {
+                            Picker("Qwen speaker", selection: voiceChoice(speaker.id, key: "qwen_speaker", defaultValue: speaker.qwenSpeaker)) {
+                                ForEach(["Aiden", "Ryan", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna", "Sohee"], id: \.self) { Text($0).tag($0) }
+                            }
+                        }
                         if provider == "kokoro" {
                             TextField("Kokoro preset (e.g. am_adam)", text: voiceChoice(speaker.id, key: "kokoro_voice", defaultValue: speaker.kokoroVoice))
                         } else if provider == "macos" {
                             TextField("macOS voice name", text: voiceChoice(speaker.id, key: "macos_voice", defaultValue: speaker.macosVoice))
-                        } else if provider == "chatterbox" {
+                        } else if provider == "chatterbox" || provider == "index_clone" {
                             TextField("Reference audio path (optional)", text: voiceChoice(speaker.id, key: "reference_audio", defaultValue: ""))
                         } else if provider == "elevenlabs" {
                             TextField("ElevenLabs voice ID (optional)", text: voiceChoice(speaker.id, key: "elevenlabs_voice_id", defaultValue: ""))
