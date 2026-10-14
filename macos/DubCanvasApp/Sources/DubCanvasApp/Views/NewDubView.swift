@@ -398,7 +398,7 @@ struct NewDubView: View {
                             TextField("Kokoro preset (e.g. am_adam)", text: voiceChoice(speaker.id, key: "kokoro_voice", defaultValue: speaker.kokoroVoice))
                         } else if provider == "macos" {
                             TextField("macOS voice name", text: voiceChoice(speaker.id, key: "macos_voice", defaultValue: speaker.macosVoice))
-                        } else if provider == "chatterbox" {
+                        } else if provider == "chatterbox" || provider == "index_clone" {
                             TextField("Reference audio path (optional)", text: voiceChoice(speaker.id, key: "reference_audio", defaultValue: ""))
                         } else if provider == "elevenlabs" {
                             TextField("ElevenLabs voice ID (optional)", text: voiceChoice(speaker.id, key: "elevenlabs_voice_id", defaultValue: ""))

@@ -99,6 +99,10 @@ class Worker:
             if line.startswith("DUBCANVAS_METADATA "):
                 getattr(self.runner, "diagnostic", lambda *a, **k: None)("Model worker runtime", **json.loads(line.removeprefix("DUBCANVAS_METADATA ")))
                 continue
+            if line.startswith("DUBCANVAS_DOWNLOAD "):
+                event = json.loads(line.removeprefix("DUBCANVAS_DOWNLOAD "))
+                self.runner.progress("__MODEL_DOWNLOAD__|{completed_files}|{total_files}|{model}".format(**event))
+                continue
             self.tail.append(line)
             getattr(self.runner, "diagnostic", lambda *a, **k: None)("Model worker output", role=self.role, output=line)
 
@@ -136,6 +140,8 @@ class Worker:
             except (psutil.Error, subprocess.TimeoutExpired):
                 self.proc.kill()
                 self.proc.wait()
+            if hasattr(self, "reader"):
+                self.reader.join(timeout=1)
             for stream in (self.proc.stdin, self.proc.stdout):
                 if stream:
                     stream.close()
@@ -161,7 +167,7 @@ class Checkpoints:
         path = self.path(stage, inputs)
         if self.config.resume and not self.config.force and path.is_file():
             try:
-                data = json.loads(path.read_text())
+                data = json.loads(path.read_text(encoding="utf-8"))
                 if data.get("complete") and data.get("signature") == path.stem:
                     return data["result"]
             except (OSError, ValueError, KeyError):

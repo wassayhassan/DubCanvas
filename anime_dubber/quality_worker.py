@@ -8,6 +8,8 @@ from pathlib import Path
 import sys
 import traceback
 import importlib.metadata
+import threading
+import time
 
 _loaded = None
 _identity = None
@@ -34,7 +36,15 @@ def snapshot(model, q, role):
         if file_digest(adapter) != q["translation_adapter_sha256"]:
             raise ValueError("Hy adapter checksum differs from the audited configuration")
         return str(path)
-    return snapshot_download(model["repo"], revision=model.get("revision"),
+    from tqdm.auto import tqdm
+    class DownloadProgress(tqdm):
+        def display(self, *args, **kwargs):
+            now = time.monotonic()
+            if now - getattr(self, "_last_event", 0) >= .5 or self.n == self.total:
+                self._last_event = now
+                print("DUBCANVAS_DOWNLOAD " + json.dumps({"model": model["repo"],
+                    "completed_files": self.n, "total_files": self.total or 0}), file=sys.stderr, flush=True)
+    return snapshot_download(model["repo"], revision=model.get("revision"), tqdm_class=DownloadProgress,
                              allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model", "*.tiktoken", "*.npz", "*.npy", "*.ark", "*.yaml"])
 
 def load(role, q):
@@ -77,7 +87,7 @@ def load(role, q):
         import torch
         import yaml
         # The audited upstream YAML contains a !!python/tuple augmentation entry.
-        config = OmegaConf.create(yaml.load(Path(q["bandit_config"]).read_text(), Loader=yaml.FullLoader))
+        config = OmegaConf.create(yaml.load(Path(q["bandit_config"]).read_text(encoding="utf-8"), Loader=yaml.FullLoader))
         model = Bandit(**dict(config.kwargs))
         state = torch.load(q["bandit_checkpoint"], map_location="cpu", weights_only=True)
         for key in ("state", "state_dict", "model_state_dict"):
@@ -191,6 +201,18 @@ def execute(role, request, q):
 
 def main():
     role = sys.argv[1]
+    import psutil
+    parent = psutil.Process(os.getppid())
+    parent_created = parent.create_time()
+    def watch_parent():
+        while True:
+            time.sleep(.5)
+            try:
+                if not parent.is_running() or parent.create_time() != parent_created:
+                    os._exit(1)
+            except psutil.Error:
+                os._exit(1)
+    threading.Thread(target=watch_parent, daemon=True).start()
     versions = {}
     for package in ("mlx", "mlx-lm", "mlx-vlm", "mlx-audio", "torch", "torchaudio", "pyannote-audio", "kokoro"):
         try:

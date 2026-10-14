@@ -222,13 +222,13 @@ def assign_speakers(words, tracks, cuts):
 def source_analysis(video, audio, stems, config, q, work, checkpoints, runner, progress):
     from .core import ffprobe_duration
     cuts = scene_cuts(video, q, checkpoints, runner)
+    words = recognize(audio, stems["dialogue"], q, config, work, checkpoints, runner, progress)
     _stage(runner, "analyzing_characters", "Detecting overlapping speaker tracks")
     diarizer_audio = work / "diarization-16k.wav"
     _cut_audio(stems["dialogue"], diarizer_audio, 0, ffprobe_duration(audio, runner), runner)
     with Worker("diarizer", q, runner) as worker:
         tracks = _cached_call(worker, checkpoints, "diarization", {"model": q["models"]["diarizer"], "audio_sha256": file_digest(stems["dialogue"])},
                               {"audio": str(diarizer_audio)})["tracks"]
-    words = recognize(audio, stems["dialogue"], q, config, work, checkpoints, runner, progress)
     segments = assign_speakers(words, tracks, cuts)
     import numpy as np
     import soundfile as sf
@@ -252,7 +252,7 @@ def source_analysis(video, audio, stems, config, q, work, checkpoints, runner, p
 def cast(segments, config, q, path, runner):
     from .characters import CharacterProfile, write_character_map
     from .providers.tts import automatic_kokoro_voice
-    prior = json.loads(path.read_text()) if path.exists() else {}
+    prior = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     saved = {row["id"]: row for row in prior.get("characters", [])}
     profiles = {}
     shared_profiles = []
@@ -260,6 +260,7 @@ def cast(segments, config, q, path, runner):
         profile = CharacterProfile.from_dict(saved[sid]) if sid in saved else CharacterProfile(sid, f"Speaker {i + 1}")
         profile.line_count = sum(s.speaker_id == sid for s in segments)
         profile.speaking_seconds = sum(s.end - s.start for s in segments if s.speaker_id == sid)
+        profile.speaking_share = profile.speaking_seconds / max(.001, sum(s.end - s.start for s in segments))
         profile.embedding_backend = "pyannote-community-1"
         row = profile.to_dict()
         # Stable ID/cast persists across versions; gender is not inferred from pitch.
@@ -307,6 +308,13 @@ def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints,
                 identity = {"text": voice_text, "cast": row, "style": instruct,
                     "model": q["models"]["tts"] if engine == "qwen" else engine,
                     "glossary": glossary.revision, "cloud_model": config.elevenlabs_model_id if engine == "elevenlabs" else None}
+                if engine == "index_clone":
+                    identity["clone_config_sha256"] = file_digest(q["clone_config"])
+                    identity["clone_model_directory"] = q["clone_model_dir"]
+                    reference = row.get("reference_audio", "")
+                    if not reference or not Path(reference).is_file():
+                        raise PipelineError(f"Choose a readable reference for cloned character {seg.speaker_id}")
+                    identity["reference_sha256"] = file_digest(reference)
                 path = directory / f"{i:06}_{digest(identity)[:16]}.wav"
                 if config.force or not config.resume or not _complete_wav(path):
                     temp = path.with_suffix(".rendering.wav")
@@ -322,7 +330,8 @@ def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints,
                             cloud_cfg = dataclasses.replace(config, elevenlabs_voice_id=row.get("elevenlabs_voice_id") or config.elevenlabs_voice_id,
                                                             elevenlabs_model_id="eleven_v4")
                             mp3 = temp.with_suffix(".mp3")
-                            synthesize_elevenlabs(voice_text, mp3, cloud_cfg, runner)
+                            cloud_text = ({"shouting": "[shouting] ", "whispering": "[whispering] "}.get(seg.style, "") + voice_text)
+                            synthesize_elevenlabs(cloud_text, mp3, cloud_cfg, runner)
                             _cut_audio(mp3, temp, 0, 3600, runner, mono=False)
                             mp3.unlink(missing_ok=True)
                         if not _complete_wav(temp):
@@ -426,14 +435,14 @@ def shorten_failed(segments, failed, config, q, checkpoints, glossary, runner):
                 approved = True
     return approved
 
-def mix(audio, stems, segments, clips, duration, work, config, q, runner, progress):
+def mix(audio, stems, segments, clips, duration, work, config, q, runner, progress, *, source_segments=None):
     from .core import (_atomic_media_run, render_dub_timeline,
                        ffprobe_duration, PipelineError)
     background = work / "music-effects.wav"
     _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(stems["music"]), "-i", str(stems["effects"]),
         "-filter_complex", "[0:a][1:a]amix=inputs=2:normalize=0:duration=first[b]", "-map", "[b]",
         "-ar", "48000", "-c:a", "pcm_f32le", str(background)], background)
-    bed = hybrid_background(audio, background, segments, work, runner)
+    bed = hybrid_background(audio, background, source_segments or segments, work, runner)
     timeline = render_dub_timeline(segments, clips, duration, work, config, runner, progress)
     _stage(runner, "mixing", "Mixing voices and preserving background")
     drymix = work / "mix-premaster.wav"
@@ -580,7 +589,7 @@ def run_quality(config, progress, runner, *, analysis=False):
         ledger_path = Path(q["episode_context_path"]).expanduser()
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
         with folder_lock(ledger_path.parent):
-            ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {"episodes": {}}
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {"episodes": {}}
             ledger["episodes"][identity] = {"source_sha256": identity, "cues": reviews}
             _atomic_json_write(ledger_path, ledger)
     if config.mode == "subtitles":
@@ -604,11 +613,32 @@ def run_quality(config, progress, runner, *, analysis=False):
         subtitles()
     rendered = [ffprobe_duration(path, runner) for path in clips]
     validate_schedule(segments, rendered, cuts)
+    from .visual_sync import align_dub_to_visible_speech
+    hinted = align_dub_to_visible_speech(video, segments, clips, work, runner, progress,
+        total_duration=duration, resume=config.resume, force=config.force)
+    timeline_segments = list(segments)
+    # Mouth motion is soft evidence. Reject large shifts or any hard collision/cut.
+    for i, candidate in enumerate(hinted):
+        if abs(candidate.start - segments[i].start) > .15 or candidate.start < 0:
+            continue
+        trial = list(timeline_segments)
+        trial[i] = candidate
+        try:
+            validate_schedule(trial, rendered, cuts)
+        except PipelineError:
+            continue
+        if candidate.start + rendered[i] <= duration + .015:
+            timeline_segments = trial
     # Re-recognize after time stretching, not only before it.
     fitted_takes = [{**take, "path": clip, "identity": {**take["identity"], "fitted_sha256": file_digest(clip)}}
                    for take, clip in zip(takes, clips)]
     speech_qa(fitted_takes, q, version_cp, runner, progress)
-    master = mix(audio, stems, segments, clips, duration, work, config, q, runner, progress)
+    # Keep source replacement windows at their original positions while placing
+    # English at accepted visual hints. Only the English subtitle timing changes.
+    master = mix(audio, stems, timeline_segments, clips, duration, work, config, q, runner, progress,
+                 source_segments=segments)
+    write_srt(timeline_segments, target_srt, translated=True)
+    write_vtt(timeline_segments, target_vtt, translated=True)
     encoded = work / "dub-audio.m4a"
     _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(master), "-c:a", "aac", "-b:a", "256k", str(encoded)], encoded)
     final = version / f"{key}_EN_DUB.mp4"

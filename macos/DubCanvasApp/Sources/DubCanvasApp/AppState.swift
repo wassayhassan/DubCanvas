@@ -887,6 +887,10 @@ final class AppState: ObservableObject {
 
     func previewSelectedVoice() {
         guard selectedCharacterID != nil else { return }
+        if pipelineProfile == "quality_v1" && Self.hasRunningJobs {
+            characterSaveMessage = "Pause processing before previewing a model voice."
+            return
+        }
         let text = characterDraft.displayName.isEmpty
             ? "This is the selected character speaking in English."
             : "This is \(characterDraft.displayName) speaking in English."
@@ -1015,6 +1019,7 @@ final class AppState: ObservableObject {
         if !ok {
             let error = payload["error"] as? [String: Any]
             let message = error?["message"] as? String ?? "Backend request failed."
+            if id.hasPrefix("quality-check-") { qualitySetupReport = message; return }
             if id.hasPrefix("inspect-source-") {
                 let requested = inspectionRequests.removeValue(forKey: id)
                 if requested == source.trimmingCharacters(in: .whitespacesAndNewlines) {

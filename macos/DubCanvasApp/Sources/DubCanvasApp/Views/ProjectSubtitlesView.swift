@@ -26,6 +26,7 @@ struct ProjectSubtitlesView: View {
         guard let set = selectedSet else { return nil }
         return set.artifacts["translated_srt"] ?? set.artifacts["source_srt"]
             ?? set.artifacts["chinese_srt"] ?? set.artifacts["english_srt"]
+            ?? set.artifacts["partial_translated_srt"] ?? set.artifacts["source_provisional_srt"]
     }
     private var visibleCues: [SubtitleCue] {
         search.isEmpty ? cues : cues.filter {
@@ -80,6 +81,17 @@ struct ProjectSubtitlesView: View {
                         if let fileIssue {
                             Label(fileIssue, systemImage: "exclamationmark.triangle")
                                 .foregroundStyle(.orange)
+                        }
+                        if selectedSet?.artifacts["translated_srt"] == nil,
+                           selectedSet?.artifacts["partial_translated_srt"] != nil {
+                            Label("Partial translation — completed lines are saved; review must finish before dubbing.", systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                        if selectedSet?.artifacts["source_srt"] == nil,
+                           selectedSet?.artifacts["chinese_srt"] == nil,
+                           selectedSet?.artifacts["source_provisional_srt"] != nil {
+                            Label("Provisional source transcript — recognition and alignment checks are still pending.", systemImage: "clock")
+                                .font(.caption).foregroundStyle(.orange)
                         }
                         TextField("Search text or timestamp", text: $search)
                             .textFieldStyle(.roundedBorder)

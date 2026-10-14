@@ -1646,8 +1646,15 @@ def prepare_tts_clip(
         from .providers.tts import automatic_kokoro_voice
         kokoro_voice = automatic_kokoro_voice(profile)
 
+    if resolved_tts in {"kokoro", "piper", "macos"}:
+        if base_rate > 307:
+            progress(f"Capping native speech rate for line {index + 1} to respect the 1.5× ceiling")
+            base_rate = 307
+        native_acceleration = max(1.0, base_rate / 205.0)
+        max_tempo = min(max_tempo, 1.5 / native_acceleration)
+
     signature_data = {
-        "processing_version": 3,
+        "processing_version": 4,
         "max_tempo": round(max_tempo, 3),
         "next_start": round(next_start, 3) if next_start is not None else None,
         "text": text,

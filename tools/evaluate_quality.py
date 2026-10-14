@@ -22,8 +22,8 @@ def main():
     parser.add_argument("--settings", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    q = json.loads(args.settings.read_text())
-    manifest = json.loads(args.manifest.read_text())
+    q = json.loads(args.settings.read_text(encoding="utf-8"))
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     args.output.mkdir(parents=True, exist_ok=True)
     service = ApplicationService()
     result = {"platform": platform.platform(), "hardware_performance_verified": False, "clips": []}
@@ -40,7 +40,7 @@ def main():
                 gold = "".join(cue["text"] for cue in read_srt(Path(clip["gold_source_srt"])))
                 recognized = "".join(cue["text"] for cue in read_srt(Path(artifacts["chinese_srt"])))
                 row["cer"] = edit_distance(gold, recognized) / max(1, len(gold))
-            translated = Path(artifacts["translated_srt"]).read_text()
+            translated = Path(artifacts["translated_srt"]).read_text(encoding="utf-8")
             row["missing_expected_terms"] = [term for term in clip.get("expected_terms", []) if term.casefold() not in translated.casefold()]
         result["clips"].append(row)
         _atomic_json_write(args.output / "evaluation.json", result)

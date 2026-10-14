@@ -279,7 +279,7 @@ class ProjectStore:
         if kind in {"source_srt", "chinese_srt"}:
             payload["source_language"] = language
         if kind.endswith("_srt") or kind.endswith("_vtt") or kind == "review_report":
-            source_caption = kind in {"source_srt", "source_vtt", "chinese_srt", "chinese_vtt"}
+            source_caption = kind in {"source_srt", "source_vtt", "chinese_srt", "chinese_vtt", "source_provisional_srt", "source_provisional_vtt"}
             key = f"source:{language}" if source_caption else (f"{version_id}:{language}" if version_id else language)
             subtitle = payload.setdefault("subtitles", {}).setdefault(key, {
                 "language": language, "created_at": _now(), "artifacts": {},

@@ -245,7 +245,7 @@ private struct CharacterInspector: View {
                             Text("Aiden is the American English preset. Other presets need accent validation.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        if usesChatterbox {
+                        if usesChatterbox || state.characterDraft.ttsProvider == "index_clone" {
                             if !state.characterDraft.suggestedReferenceAudio.isEmpty {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Toggle("Use automatically selected source voice", isOn: $state.characterDraft.autoReferenceEnabled)

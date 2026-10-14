@@ -12,11 +12,15 @@ from unittest.mock import patch
 from anime_dubber.core import Config, CommandRunner, Segment, PipelineError, run_pipeline, analyze_only
 from anime_dubber.quality_models import options, digest
 from anime_dubber.quality_runtime import Checkpoints, Worker
-from anime_dubber.quality_timing import choose_tempo, window, speech_error, validate_schedule
+from anime_dubber.quality_timing import choose_tempo, window, speech_error, validate_schedule, protected_speech_matches
 from anime_dubber.localization import Glossary, localize, validate_review, parse_object, cloud_review
 from anime_dubber.application.service import config_from_dict, ApplicationService
 
 class QualityConfigTests(unittest.TestCase):
+    def test_consent_is_explicit_boolean_not_truthy_text(self):
+        for key in ("allow_cloud", "reference_consent"):
+            with self.assertRaises(ValueError):
+                options({key: "false"})
     def test_legacy_profile_preserved_and_quality_settings_roundtrip(self):
         self.assertEqual(config_from_dict({"source": "x", "output_dir": "/tmp/out"}).pipeline_profile, "legacy")
         cfg = config_from_dict({"source": "x", "output_dir": "/tmp/out", "pipeline_profile": "quality_v1",
@@ -47,6 +51,10 @@ class QualityConfigTests(unittest.TestCase):
             upload.assert_not_called()
 
 class TimingTests(unittest.TestCase):
+    def test_low_wer_cannot_hide_negation_or_number_loss(self):
+        self.assertFalse(protected_speech_matches("I did not reach realm 3", "I did reach realm 3"))
+        self.assertFalse(protected_speech_matches("realm 3", "realm 4"))
+        self.assertTrue(protected_speech_matches("I will never leave", "I will never leave"))
     def test_combined_ceiling_and_style_limits(self):
         q = options()
         self.assertIsNone(choose_tempo(1.6, 1, "normal", q))
@@ -87,6 +95,67 @@ class CheckpointTests(unittest.TestCase):
             self.assertIsNone(cp.get("translation", inputs))
 
 class LocalizationTests(unittest.TestCase):
+    def test_glossary_roundtrips_under_windows_default_encoding(self):
+        real_read = Path.read_text
+        def windows_read(path, *args, **kwargs):
+            kwargs.setdefault("encoding", "cp1252")
+            return real_read(path, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as td, patch.object(Path, "read_text", windows_read):
+            g = Glossary(Path(td) / "glossary.json", {"宗主": "Sect Master"})
+            g.save()
+            restored = Glossary(g.path, {})
+            self.assertEqual(restored.revision, g.revision)
+            self.assertIn("宗主", restored.entries)
+
+    def test_dub_voice_override_does_not_change_shared_cast(self):
+        from anime_dubber.quality_pipeline import cast
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Config("source", Path(td), voice_overrides={"s": {"tts_provider": "qwen", "qwen_speaker": "Vivian"}})
+            path = Path(td) / "cast.json"
+            profiles = cast([Segment(0, 1, "你好", speaker_id="s")], cfg, options(), path, CommandRunner())
+            self.assertEqual(profiles["s"]["qwen_speaker"], "Vivian")
+            shared = json.loads(path.read_text())["characters"][0]
+            self.assertEqual(shared["qwen_speaker"], "Aiden")
+            self.assertEqual(shared["tts_provider"], "inherit")
+
+    def test_background_outside_dialogue_is_preserved_exactly(self):
+        import numpy as np
+        import soundfile as sf
+        from anime_dubber.quality_pipeline import hybrid_background
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            original = np.full((48000 * 4, 2), .2, dtype="float32")
+            separated = np.full_like(original, .05)
+            sf.write(root / "original.wav", original, 48000, subtype="FLOAT")
+            sf.write(root / "separated.wav", separated, 48000, subtype="FLOAT")
+            result = hybrid_background(root / "original.wav", root / "separated.wav", [Segment(1, 2, "你好")], root, CommandRunner())
+            bed, _ = sf.read(result, dtype="float32")
+            np.testing.assert_array_equal(bed[:20000], original[:20000])
+            np.testing.assert_array_equal(bed[150000:], original[150000:])
+            np.testing.assert_allclose(bed[60000:80000], .05)
+
+    def test_genuine_overlap_is_explicitly_blocked_not_silently_misattributed(self):
+        from anime_dubber.quality_pipeline import assign_speakers
+        with self.assertRaisesRegex(PipelineError, "Overlapping speakers"):
+            assign_speakers([{"start": 0, "end": 1, "text": "你好"}],
+                [{"start": 0, "end": 1, "speaker": "a"}, {"start": 0, "end": 1, "speaker": "b"}], [])
+
+    @unittest.skipUnless(shutil.which("rubberband") and shutil.which("ffprobe"), "Rubber Band executable required")
+    def test_rubberband_r3_actual_output_fits_and_preserves_duration_contract(self):
+        import numpy as np
+        import soundfile as sf
+        from anime_dubber.quality_pipeline import fit_takes
+        from anime_dubber.core import ffprobe_duration
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); audio = root / "take.wav"
+            sr = 48000; t = np.arange(sr) / sr
+            sf.write(audio, .1 * np.sin(2 * np.pi * 440 * t), sr, subtype="FLOAT")
+            segments = [Segment(0, .85, "你好", "Hello", speaker_id="a")]
+            q = options({"on_screen_borrow": 0}); q["media_duration"] = 1
+            takes = [{"path": audio, "alignment": [{"start_time": .05, "end_time": .85}]}]
+            clips, failed = fit_takes(segments, takes, [], q, root, CommandRunner())
+            self.assertEqual(failed, [])
+            self.assertLessEqual(ffprobe_duration(clips[0], CommandRunner()), .865)
     def test_review_requires_real_source_evidence(self):
         bad = {"passed": False, "errors": [{"category": "negation", "source_evidence": "invented",
              "target_evidence": "", "explanation": "Missing negation"}]}

@@ -153,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _payload(args: argparse.Namespace) -> Dict[str, Any]:
     return {
         "pipeline_profile": args.pipeline_profile,
-        "quality_settings": json.loads(args.quality_settings.read_text()) if args.quality_settings else {},
+        "quality_settings": json.loads(args.quality_settings.read_text(encoding="utf-8")) if args.quality_settings else {},
         "source": args.source,
         "output_dir": str(Path(args.output).expanduser()),
         "series_id": args.series_id,
@@ -252,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "quality-check":
         from .quality_models import options, setup_issues
         try:
-            q = options(json.loads(args.settings.read_text()))
+            q = options(json.loads(args.settings.read_text(encoding="utf-8")))
             issues = setup_issues(q)
             print(json.dumps({"ready_for_smoke_test": not issues, "hardware_verified": False,
                               "issues": issues, "models": q["models"]}, indent=2))

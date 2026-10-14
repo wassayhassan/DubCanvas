@@ -13,7 +13,7 @@ def main():
     args = parser.parse_args()
     settings = dict(DEFAULTS)
     if args.worker_paths:
-        settings.update(json.loads(args.worker_paths.read_text()))
+        settings.update(json.loads(args.worker_paths.read_text(encoding="utf-8")))
     if args.output.exists():
         parser.error("Refusing to overwrite existing settings")
     args.output.write_text(json.dumps(settings, ensure_ascii=False, indent=2))

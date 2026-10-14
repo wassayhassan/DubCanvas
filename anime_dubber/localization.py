@@ -27,7 +27,7 @@ class Glossary:
         self.entries = {}
         self.ranks = []
         if self.path.exists():
-            value = json.loads(self.path.read_text())
+            value = json.loads(self.path.read_text(encoding="utf-8"))
             self.entries = value.get("entries", {})
             self.ranks = value.get("realm_order", [])
         for chinese, english in seed.items():
@@ -71,7 +71,7 @@ class Glossary:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with folder_lock(self.path.parent):
             if self.path.exists():
-                latest = json.loads(self.path.read_text())
+                latest = json.loads(self.path.read_text(encoding="utf-8"))
                 for key, row in latest.get("entries", {}).items():
                     if key in self.entries and self.entries[key]["english"] != row["english"]:
                         raise ValueError(f"Glossary changed during processing at {key}; retry with the new terminology")
@@ -210,8 +210,16 @@ def localize(segments, config, q, checkpoints, glossary, runner, progress, parti
                 if not row["passed"] or violations:
                     failing.append((i, row, violations))
                 else:
-                    glossary.learn(row.get("terms", []), seg.text, seg.translated,
-                                   f"{checkpoints.identity}:{i + 1}")
+                    try:
+                        glossary.learn(row.get("terms", []), seg.text, seg.translated,
+                                       f"{checkpoints.identity}:{i + 1}")
+                    except ValueError as exc:
+                        # A newly discovered spelling conflict is repairable, not
+                        # permission to overwrite established project terminology.
+                        row = {**row, "passed": False, "errors": row["errors"] + [{
+                            "category": "terminology_conflict", "source_evidence": seg.text,
+                            "target_evidence": seg.translated, "explanation": str(exc)}]}
+                        failing.append((i, row, ["inconsistent discovered terminology"]))
                 reviews.append({"cue": i + 1, "source": seg.text, "faithful_translation": seg.translated,
                                 "start": seg.start, "end": seg.end, **row, "glossary_violations": violations})
                 progress(f"Meaning review: {i + 1}/{len(segments)} cues (pass {cycle + 1})")
@@ -252,7 +260,7 @@ def episode_context(q, glossary, source, scene):
     path = q["episode_context_path"]
     if not path or not Path(path).exists():
         return scene
-    ledger = json.loads(Path(path).read_text())
+    ledger = json.loads(Path(path).read_text(encoding="utf-8"))
     entities = [key for key, row in glossary.relevant(source).items()
                 if row.get("kind") in {"name", "realm", "sect", "technique", "artifact"}]
     related = []

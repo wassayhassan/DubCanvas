@@ -944,6 +944,10 @@ class ApplicationService:
 
         settings = dict(settings or {})
         provider = str(settings.get("provider") or "macos").strip().lower()
+        if provider in {"qwen", "index_clone"}:
+            with self._lock:
+                if any(job.status in {"queued", "running"} for job in self._jobs.values()):
+                    raise ValueError("Pause processing before model voice preview; saved work is preserved")
         if settings.get("pipeline_profile") == "quality_v1" and provider == "elevenlabs":
             from ..quality_models import options
             if not options(settings.get("quality_settings"))["allow_cloud"]:
