@@ -12,7 +12,7 @@ from unittest.mock import patch
 from anime_dubber.core import Config, CommandRunner, Segment, PipelineError, run_pipeline, analyze_only
 from anime_dubber.quality_models import options, digest
 from anime_dubber.quality_runtime import Checkpoints, Worker
-from anime_dubber.quality_timing import choose_tempo, window, speech_error, validate_schedule, protected_speech_matches
+from anime_dubber.quality_timing import choose_tempo, window, speech_error, validate_schedule, protected_speech_matches, chinese_critical_matches
 from anime_dubber.localization import Glossary, localize, validate_review, parse_object, cloud_review
 from anime_dubber.application.service import config_from_dict, ApplicationService
 
@@ -59,6 +59,21 @@ class QualityConfigTests(unittest.TestCase):
             upload.assert_not_called()
 
 class TimingTests(unittest.TestCase):
+    def test_spoken_numbers_match_digits_without_accepting_changed_quantities(self):
+        self.assertEqual(speech_error("Level 3", "Level three"), 0)
+        self.assertEqual(speech_error("120 years", "one hundred twenty years"), 0)
+        self.assertTrue(protected_speech_matches("Level 3", "Level three"))
+        self.assertFalse(protected_speech_matches("Level 3", "Level four"))
+        self.assertTrue(protected_speech_matches("1.5 years", "one point five years"))
+        self.assertTrue(protected_speech_matches("21st realm", "twenty first realm"))
+    def test_low_cer_cannot_hide_source_negation_numbers_or_known_names(self):
+        self.assertFalse(chinese_critical_matches("我没有背叛宗门", "我有背叛宗门", {}))
+        self.assertFalse(chinese_critical_matches("十年之后", "四年之后", {}))
+        self.assertFalse(chinese_critical_matches("林风来了", "林峰来了", {"林风": "Lin Feng"}))
+        self.assertTrue(chinese_critical_matches("十二年之后", "12年之后", {}))
+        self.assertTrue(chinese_critical_matches("一百二十年", "120年", {}))
+        self.assertTrue(chinese_critical_matches("一万亿年", "1000000000000年", {}))
+        self.assertFalse(chinese_critical_matches("一万亿年", "一亿一万年", {}))
     def test_low_wer_cannot_hide_negation_or_number_loss(self):
         self.assertFalse(protected_speech_matches("I did not reach realm 3", "I did reach realm 3"))
         self.assertFalse(protected_speech_matches("realm 3", "realm 4"))
@@ -105,6 +120,19 @@ class CheckpointTests(unittest.TestCase):
             self.assertIsNone(cp.get("translation", inputs))
 
 class LocalizationTests(unittest.TestCase):
+    def test_default_preset_is_connected_and_explicit_female_qwen_choice_is_preserved(self):
+        from anime_dubber.quality_pipeline import cast
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); path = root / "cast.json"
+            cfg = Config("source", root)
+            profiles = cast([Segment(0, 1, "你好", speaker_id="s")], cfg,
+                            options({"qwen_speaker": "Vivian"}), path, CommandRunner())
+            self.assertEqual(profiles["s"]["qwen_speaker"], "Vivian")
+            payload = json.loads(path.read_text())
+            payload["characters"][0].update(voice_class="female", tts_provider="qwen", manual=True)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            profiles = cast([Segment(0, 1, "你好", speaker_id="s")], cfg, options(), path, CommandRunner())
+            self.assertEqual(profiles["s"]["tts_provider"], "qwen")
     def test_glossary_roundtrips_under_windows_default_encoding(self):
         real_read = Path.read_text
         def windows_read(path, *args, **kwargs):
@@ -166,6 +194,11 @@ class LocalizationTests(unittest.TestCase):
             clips, failed = fit_takes(segments, takes, [], q, root, CommandRunner())
             self.assertEqual(failed, [])
             self.assertLessEqual(ffprobe_duration(clips[0], CommandRunner()), .865)
+            samples, sr = sf.read(clips[0])
+            mono = samples.mean(axis=1)
+            spectrum = np.abs(np.fft.rfft(mono * np.hanning(len(mono))))
+            frequency = np.fft.rfftfreq(len(mono), 1 / sr)[np.argmax(spectrum)]
+            self.assertLess(abs(frequency - 440), 3)
     def test_review_requires_real_source_evidence(self):
         bad = {"passed": False, "errors": [{"category": "negation", "source_evidence": "invented",
              "target_evidence": "", "explanation": "Missing negation"}]}

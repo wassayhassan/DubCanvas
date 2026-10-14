@@ -911,6 +911,7 @@ final class AppState: ObservableObject {
                 method: "preview_voice",
                 params: [
                     "provider": inheritedProvider,
+                    "provider_inherited": characterDraft.ttsProvider == "inherit",
                     "pipeline_profile": pipelineProfile,
                     "model_id": pipelineProfile == "quality_v1" ? "eleven_v4" : "eleven_v3",
                     "qwen_speaker": characterDraft.qwenSpeaker,

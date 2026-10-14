@@ -70,7 +70,7 @@ class Worker:
             env["PYANNOTE_METRICS_ENABLED"] = "0"
             self.proc = subprocess.Popen([interpreter, "-u", "-m", "anime_dubber.quality_worker", self.role],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, env=env, bufsize=1)
+                text=True, encoding="utf-8", env=env, bufsize=1)
             self.reader = threading.Thread(target=self._read, daemon=True)
             self.reader.start()
             return self

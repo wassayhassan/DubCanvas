@@ -22,7 +22,12 @@ def main():
         for path in ("mlx_audio.stt.models.fireredasr2.fireredasr2", "mlx_audio.stt.models.qwen3_asr.qwen3_asr",
                      "mlx_audio.stt.models.qwen3_forced_aligner"):
             module = importlib.import_module(path)
-            assert hasattr(module.Model, "generate"), path
+            # Qwen's public Model delegates to its ASR/aligner implementation;
+            # the generation method is an instance attribute through __getattr__.
+            implementation = getattr(module, "Qwen3ASRModel", module.Model)
+            assert hasattr(implementation, "generate"), path
+            if implementation is not module.Model:
+                assert callable(module.Model.__getattr__)
         module = importlib.import_module("mlx_audio.tts.models.qwen3_tts")
         assert hasattr(module.Model, "generate_custom_voice")
         import mlx_whisper

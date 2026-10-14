@@ -946,7 +946,11 @@ class ApplicationService:
 
         settings = dict(settings or {})
         provider = str(settings.get("provider") or "macos").strip().lower()
-        if provider in {"qwen", "index_clone"}:
+        if settings.get("pipeline_profile") == "quality_v1" and settings.get("provider_inherited") and provider == "qwen":
+            from ..quality_models import options
+            if options(settings.get("quality_settings"))["american_female_fallback"] and settings.get("voice_class") == "female":
+                provider = "kokoro"
+        if provider in {"qwen", "index_clone"} or (settings.get("pipeline_profile") == "quality_v1" and provider == "kokoro"):
             with self._lock:
                 if any(job.status in {"queued", "running"} for job in self._jobs.values()):
                     raise ValueError("Pause processing before model voice preview; saved work is preserved")
@@ -990,14 +994,19 @@ class ApplicationService:
         preview_path = Path(tempfile.gettempdir()) / f"animedubber_preview_{uuid.uuid4().hex}{suffix}"
         runner = CommandRunner()
 
-        if provider in {"qwen", "index_clone"}:
+        if provider in {"qwen", "index_clone"} or (settings.get("pipeline_profile") == "quality_v1" and provider == "kokoro"):
             from ..quality_models import options
             from ..quality_runtime import Worker
             q = options(settings.get("quality_settings"))
             if provider == "index_clone" and not q["reference_consent"]:
                 raise ValueError("Reference cloning requires explicit consent")
-            with Worker("tts" if provider == "qwen" else "index_clone", q, runner) as worker:
+            from ..providers.tts import automatic_kokoro_voice
+            selected_voice = str(settings.get("kokoro_voice") or "auto")
+            if selected_voice == "auto":
+                selected_voice = automatic_kokoro_voice(settings)
+            with Worker({"qwen": "tts", "kokoro": "kokoro", "index_clone": "index_clone"}[provider], q, runner) as worker:
                 worker.call({"text": clean_text, "speaker": str(settings.get("qwen_speaker") or q["qwen_speaker"]),
+                    "voice": selected_voice,
                     "instruct": "Natural expressive American English at normal speed.",
                     "reference": str(settings.get("reference_audio") or ""), "output": str(preview_path)})
         elif provider == "chatterbox":

@@ -54,7 +54,7 @@ Updated 2026-10-14. The table above is the pre-edit checklist. This table record
 
 ## Observed validation
 
-- Linux x86_64, Python 3.12.14: 199 tests passed with 4 environment skips after installing small test dependencies; real Rubber Band CLI 4.0.0 R3 route exercised. Model outputs in E2E tests are fixtures, not generated speech quality evidence.
+- Linux x86_64, Python 3.12.14: 200 tests observed passing locally with 4 environment skips after installing small test dependencies; real Rubber Band CLI 4.0.0 R3 route exercised. Model outputs in E2E tests are fixtures, not generated speech quality evidence.
 - Source preflight and `git diff --check` passed. Base environment `pip check` passed.
 - Initial PR commit `35f5229`: GitHub macOS backend, Ubuntu backend, SwiftUI tests/build, universal bundle/signing/validation passed. Windows initially exposed UTF-8/default-codepage glossary loading; fixed and regression-tested. Updated CI must pass before this draft is eligible for review.
 - Unavailable locally: SwiftUI SDK/MPS/MLX execution, 48 GB unified-memory measurements, actual cloud accounts, bilingual gold media and character/voice listening panel. No GPU/ASR/TTS/translation quality results fabricated.
@@ -64,3 +64,11 @@ Updated 2026-10-14. The table above is the pre-edit checklist. This table record
 Remain an experimental, opt-in profile and draft PR. Existing working providers/casts/data remain available. Do not merge/promote based only on mocked model contracts or a successful Swift build. The code is connected and has explicit repair/block behavior; the real-model, licensing, overlap/identity and domain-quality limitations above are substantive unfinished acceptance gates.
 
 Native ARM64 resolution evidence: workflow 38490298067 passed all five isolated environments, including Python 3.12 for Kokoro/diarization. This is dependency resolution, not inference. Native installation/API smoke checks are included in the updated workflow.
+
+Native installation/API evidence at commit 22fb0b7: translation, review, separator and diarization/Kokoro passed actual ARM64 installs, pip check and API smoke. Audio smoke exposed an incorrect class-level assertion on Qwen's delegating wrapper; the test now checks its actual implementation/delegation API. Final audio/native CI result still required.
+
+The local execution environment disconnected during final publication. Remaining edits were recovered through checked GitHub API replacements; final CI, rather than an unavailable local rerun, is the acceptance evidence for that published revision.
+
+The final published suite contains 202 tests. Final CI results, including skipped-environment counts and native runtime/API probes, are authoritative for the recovered publication. Real model weights/inference and M5 Max 48 GB performance remain unverified.
+
+Additional acceptance limit: automatic speech-versus-song/reaction classification is not implemented or calibrated; ambiguous non-dialogue/overlap material can block source analysis. A validated event-classification/separation policy and representative clips are required before claiming universal one-click coverage.

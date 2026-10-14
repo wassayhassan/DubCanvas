@@ -80,7 +80,7 @@ struct QualitySettingsView: View {
                     Text("Eleven v4 · cloud").tag("elevenlabs")
                     Text("IndexTTS2.5 · optional reference clone").tag("index_clone")
                 }
-                Picker("Default Qwen speaker", selection: string("qwen_speaker", default: "Aiden")) {
+                Picker("Qwen default for new speakers", selection: string("qwen_speaker", default: "Aiden")) {
                     ForEach(["Aiden", "Ryan", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna", "Sohee"], id: \.self) { Text($0).tag($0) }
                 }
                 Toggle("Use Kokoro for identified female American roles", isOn: flag("american_female_fallback", default: true))

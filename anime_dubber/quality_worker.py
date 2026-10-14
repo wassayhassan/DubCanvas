@@ -70,7 +70,8 @@ def load(role, q):
             _loaded = load_lm(model_path)
         else:
             from mlx_vlm import load as load_vlm
-            _loaded = load_vlm(model_path)
+            m, processor = load_vlm(model_path)
+            _loaded = (m, processor, json.loads((Path(model_path) / "config.json").read_text(encoding="utf-8")))
     elif role == "diarizer":
         from pyannote.audio import Pipeline
         _loaded = Pipeline.from_pretrained(q["models"][role]["repo"], token=os.getenv("HF_TOKEN"))
@@ -136,7 +137,7 @@ def execute(role, request, q):
         return {"tracks": [{"start": s.start, "end": s.end, "speaker": str(label)}
                             for s, _, label in diarization.itertracks(yield_label=True)]}
     if role in {"translator", "reviewer"}:
-        m, tokenizer = model
+        m, tokenizer = model[:2]
         tokens = q["max_output_tokens"]
         prompt = request["prompt"]
         messages = [{"role": "user", "content": prompt}]
@@ -152,7 +153,7 @@ def execute(role, request, q):
             return {"text": str(result)}
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
-        rendered = apply_chat_template(tokenizer, m.config, prompt, num_images=0,
+        rendered = apply_chat_template(tokenizer, model[2], prompt, num_images=0,
                                        enable_thinking=False)
         tok = getattr(tokenizer, "tokenizer", tokenizer)
         if len(tok.encode(rendered)) + tokens > q["context_tokens"]:

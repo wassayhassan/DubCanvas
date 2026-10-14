@@ -9,6 +9,8 @@ def separate_window(model, config, device, input_directory, output_directory):
     import numpy as np
     import soundfile as sf
     import torch
+    # Persist an operator-triggered CPU fallback across the worker's later chunks.
+    device = str(next(model.parameters()).device)
     source = Path(input_directory) / "audio.wav"
     x, sr = sf.read(source, dtype="float32", always_2d=True)
     if sr != int(config.audio.sample_rate) or x.shape[1] != 2:

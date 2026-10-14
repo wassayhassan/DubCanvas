@@ -10,7 +10,7 @@ import shutil
 
 from .quality_models import options, setup_issues, file_digest, digest
 from .quality_runtime import Worker, Checkpoints, runtime_fingerprints
-from .quality_timing import edit_distance, window, choose_tempo, speech_error, validate_schedule, protected_speech_matches
+from .quality_timing import edit_distance, window, choose_tempo, speech_error, validate_schedule, protected_speech_matches, chinese_critical_matches, normalize_chinese_numbers
 from .localization import Glossary, localize, review_prompt, parse_object, validate_review, scene_context, cloud_review
 
 def _publish(runner, kind, path, language):
@@ -128,7 +128,7 @@ def recognize(audio, dialogue, q, cfg, work, checkpoints, runner, progress):
                         {"audio": row["paths"][view], "language": "Chinese", "hotwords": list(cfg.glossary)})
                     row[role][view] = str(result.get("text", "")).strip()
                 progress(f"Transcription {role}: {row['index'] + 1}/{len(windows)} chunks")
-    normalize = lambda s: re.sub(r"[\W_]", "", s).casefold()
+    normalize = lambda s: re.sub(r"[\W_]", "", normalize_chinese_numbers(s)).casefold()
     failures = []
     disputed = []
     for row in windows:
@@ -145,7 +145,8 @@ def recognize(audio, dialogue, q, cfg, work, checkpoints, runner, progress):
                 if a and b:
                     na, nb = normalize(a), normalize(b)
                     error = edit_distance(na, nb) / max(1, len(na), len(nb))
-                    pairs.append((error, a, b))
+                    if chinese_critical_matches(a, b, cfg.glossary):
+                        pairs.append((error, a, b))
         if not pairs or min(pairs)[0] > .18:
             disputed.append(row)
         row["text"] = min(pairs)[1] if pairs else nonempty[0]
@@ -159,7 +160,7 @@ def recognize(audio, dialogue, q, cfg, work, checkpoints, runner, progress):
                 row["hypotheses"].append(alternative)
                 matches = []
                 for hypothesis in row["hypotheses"][:-1]:
-                    if hypothesis and alternative:
+                    if hypothesis and alternative and chinese_critical_matches(hypothesis, alternative, cfg.glossary):
                         error = edit_distance(normalize(alternative), normalize(hypothesis)) / max(1, len(normalize(alternative)), len(normalize(hypothesis)))
                         matches.append((error, hypothesis))
                 if matches and min(matches)[0] <= .18:
@@ -178,6 +179,10 @@ def recognize(audio, dialogue, q, cfg, work, checkpoints, runner, progress):
                             + ". All hypotheses/provisional subtitles saved; no dub generated")
     if not provisional:
         raise PipelineError("Both recognizers found no dialogue; source audio and logs saved")
+    recognized_text = "".join(s.text for s in provisional)
+    han_count = len(re.findall(r"[\u3400-\u9fff]", recognized_text))
+    if han_count / max(1, len(normalize(recognized_text))) < .2:
+        raise PipelineError("Recognition is mostly outside Chinese. Provisional subtitles saved; choose the existing multilingual profile or verify the source language")
     _stage(runner, "aligning", "Aligning accepted Chinese dialogue")
     aligned = []
     with Worker("aligner", q, runner) as worker:
@@ -192,7 +197,9 @@ def recognize(audio, dialogue, q, cfg, work, checkpoints, runner, progress):
                 raise PipelineError(f"Chinese aligner returned no timestamps at chunk {row['index'] + 1}")
             for item in items:
                 a, b = float(item["start_time"]) + row["audio_start"], float(item["end_time"]) + row["audio_start"]
-                if row["start"] <= (a + b) / 2 < row["end"] and b > a:
+                if not math.isfinite(a) or not math.isfinite(b) or b <= a:
+                    raise PipelineError(f"Invalid Chinese word alignment in chunk {row['index'] + 1}; provisional transcript saved, no dialogue discarded")
+                if row["start"] <= (a + b) / 2 < row["end"]:
                     aligned.append({"start": a, "end": b, "text": item["text"]})
     return aligned
 
@@ -265,20 +272,25 @@ def cast(segments, config, q, path, runner):
         profile.embedding_backend = "pyannote-community-1"
         row = profile.to_dict()
         # Stable ID/cast persists across versions; gender is not inferred from pitch.
-        row["qwen_speaker"] = row.get("qwen_speaker") or saved.get(sid, {}).get("qwen_speaker") or ("Aiden" if i % 2 == 0 else "Ryan")
+        default_speaker = q["qwen_speaker"] if q["qwen_speaker"] != "Aiden" else ("Aiden" if i % 2 == 0 else "Ryan")
+        row["qwen_speaker"] = row.get("qwen_speaker") or saved.get(sid, {}).get("qwen_speaker") or default_speaker
         shared_profiles.append(dict(row))
         # Dub-version overrides never mutate the project's shared character choices.
-        row.update(config.voice_overrides.get(sid, {}))
+        override = config.voice_overrides.get(sid, {})
+        inherited = row.get("tts_provider") in {"inherit", "auto", "", None}
+        explicit_qwen = (not inherited and row.get("tts_provider") == "qwen") or override.get("tts_provider") == "qwen" or bool(override.get("qwen_speaker"))
+        row.update(override)
         if row.get("tts_provider") in {"inherit", "auto", "", None}:
             row["tts_provider"] = q["voice_engine"]
-        if q["american_female_fallback"] and row.get("voice_class") == "female" and row["tts_provider"] == "qwen":
+        if q["american_female_fallback"] and row.get("voice_class") == "female" and row["tts_provider"] == "qwen" and not explicit_qwen:
             row["tts_provider"] = "kokoro"
         if row.get("kokoro_voice") in {"", "auto", None}:
             row["kokoro_voice"] = automatic_kokoro_voice(row)
         profiles[sid] = row
-        if row.get("voice_class") == "neutral" and not row.get("manual"):
+        if row.get("voice_class") == "neutral" and not row.get("manual") and row["tts_provider"] in {"qwen", "kokoro"}:
+            preset = row["qwen_speaker"] if row["tts_provider"] == "qwen" else row["kokoro_voice"]
             runner.progress(f"Warning: {profile.display_name} has no validated character voice-class evidence; "
-                            f"using fixed preset {row.get('qwen_speaker') or row.get('kokoro_voice')}. "
+                            f"using fixed preset {preset}. "
                             "Its voice stays consistent; verify casting in Speakers.")
     write_character_map({"version": 2, "series_id": config.series_id, "speaker_backend": "pyannote-community-1",
         "source_key": path.name.removesuffix("_quality_characters.json"), "pipeline_profile": "quality_v1",
@@ -526,6 +538,15 @@ def run_quality(config, progress, runner, *, analysis=False):
     out = Path(config.output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     key = source_key(config.source, out)
+    glossary_scope = digest(config.series_id)[:16] if config.series_id else key
+    glossary_root = out / (".anime_dubber_series" if config.series_id else ".anime_dubber_glossaries")
+    if not q["series_glossary_path"]:
+        q["series_glossary_path"] = str(glossary_root / f"{glossary_scope}-glossary.json")
+    if config.series_id and not q["episode_context_path"]:
+        q["episode_context_path"] = str(glossary_root / f"{glossary_scope}-episode-evidence.json")
+    if Path(q["series_glossary_path"]).is_file():
+        known = Glossary(q["series_glossary_path"], config.glossary)
+        config.glossary.update({term: row["english"] for term, row in known.entries.items() if row.get("confirmed")})
     shared = out / ".anime_dubber_work" / key
     shared.mkdir(parents=True, exist_ok=True)
     video = download_source(config.source, shared, runner, progress)
@@ -573,7 +594,7 @@ def run_quality(config, progress, runner, *, analysis=False):
     results = {"chinese_srt": source_srt, "chinese_vtt": source_vtt, "character_map": snapshot_map}
     if analysis:
         return results
-    glossary_path = Path(q["series_glossary_path"]).expanduser() if q["series_glossary_path"] else out / "cultivation-glossary.json"
+    glossary_path = Path(q["series_glossary_path"]).expanduser()
     glossary = Glossary(glossary_path, config.glossary)
     partial = version / f"{key}_en.partial.srt"
     def save_partial():
