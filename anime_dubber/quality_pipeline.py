@@ -300,7 +300,7 @@ def cast(segments, config, q, path, runner):
     return profiles
 
 def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints, runner, progress, *, attempts=None, delivery_hints=None):
-    from .core import _complete_wav, PipelineError, synthesize_elevenlabs
+    from .core import _complete_wav, PipelineError, CancelledError, synthesize_elevenlabs
     directory = work / "dry_voices"
     directory.mkdir(parents=True, exist_ok=True)
     takes = [None] * len(segments)
@@ -350,6 +350,8 @@ def synthesize_takes(segments, profiles, glossary, config, q, work, checkpoints,
                                 worker.call({"text": voice_text, "speaker": row.get("qwen_speaker", q["qwen_speaker"]),
                                     "voice": row["kokoro_voice"], "instruct": instruct,
                                     "reference": row.get("reference_audio", ""), "output": str(temp)})
+                            except CancelledError:
+                                raise
                             except PipelineError as exc:
                                 if any(word in str(exc).lower() for word in ("deadline", "budget", "memory", "configure isolated")):
                                     raise

@@ -3,13 +3,27 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from anime_dubber.core import Config, CommandRunner, Segment, PipelineError
+from anime_dubber.core import Config, CommandRunner, Segment, PipelineError, CancelledError
 from anime_dubber.localization import Glossary
 from anime_dubber.quality_models import options
-from anime_dubber.quality_pipeline import generate_checked_speech, SpeechValidationFailure, speech_qa
+from anime_dubber.quality_pipeline import generate_checked_speech, SpeechValidationFailure, speech_qa, synthesize_takes
 from anime_dubber.quality_runtime import Checkpoints
 
 class AutomaticRecoveryTests(unittest.TestCase):
+    def test_pause_during_synthesis_is_not_a_voice_failure(self):
+        class PausedWorker:
+            def __init__(self, *_): pass
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def call(self, request): raise CancelledError("Paused by user")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); cfg = Config("source", root); runner = CommandRunner()
+            cp = Checkpoints(root / "cp", "source", cfg, runner)
+            with patch("anime_dubber.quality_pipeline.Worker", PausedWorker), self.assertRaises(CancelledError):
+                synthesize_takes([Segment(0, 1, "甲", "Hello", "a")],
+                    {"a": {"tts_provider": "qwen", "kokoro_voice": "am_michael"}}, Glossary(root / "g.json", {}),
+                    cfg, options(), root, cp, runner, lambda _: None)
+
     def test_repair_retries_only_failed_cue_without_manual_review(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); cfg = Config("source", root); runner = CommandRunner()
