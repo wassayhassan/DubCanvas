@@ -40,6 +40,9 @@ final class ManagedSetup: ObservableObject {
     func start(quality: Bool, token: String) {
         guard !busy else { return }
         guard !AppState.hasRunningJobs else { error = "Finish or pause running jobs before setup."; return }
+        if quality && token.isEmpty {
+            error = "Accept the speaker model conditions and enter your Hugging Face read token before starting quality setup."; return
+        }
         if quality && ProcessInfo.processInfo.physicalMemory < 44_000_000_000 {
             error = "This quality model configuration requires at least 48 GB memory. Install standard processing on this Mac."; return
         }

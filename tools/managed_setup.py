@@ -130,6 +130,8 @@ def provision(root, uv, quality=False):
         run([python, ROOT / 'tools/smoke_quality_runtime.py', role], env=env)
         paths[key] = str(python)
         atomic_json(root / 'worker-paths.json', paths)
+    progress('Checking speaker model access before large model downloads')
+    run([paths['torch_python'], '-c', 'from pyannote.audio import Pipeline; Pipeline.from_pretrained("pyannote/speaker-diarization-community-1")'], env=env)
     assets = root / 'models'; assets.mkdir(exist_ok=True)
     msst = assets / ('MSST-' + MSST_REVISION)
     if not (msst / 'inference.py').exists():
@@ -161,7 +163,6 @@ def provision(root, uv, quality=False):
              'from huggingface_hub import snapshot_download; import sys; snapshot_download(sys.argv[1], revision=sys.argv[2] or None, allow_patterns=["*.json","*.safetensors","*.txt","*.model","*.tiktoken","*.npz","*.npy","*.ark","*.yaml"])',
              model['repo'], model.get('revision', '')], env=env)
     progress('Checking speaker model access and separation weights')
-    run([paths['torch_python'], '-c', 'from pyannote.audio import Pipeline; Pipeline.from_pretrained("pyannote/speaker-diarization-community-1")'], env=env)
     run([paths['separator_python'], '-c', 'import torch,sys; torch.load(sys.argv[1],map_location="cpu",weights_only=True)', checkpoint], env=env)
     settings = dict(paths, msst_path=str(msst), bandit_config=str(config), bandit_checkpoint=str(checkpoint),
                     bandit_config_sha256=digest_file(config), bandit_sha256=digest_file(checkpoint),
