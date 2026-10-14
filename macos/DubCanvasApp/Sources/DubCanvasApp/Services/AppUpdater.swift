@@ -185,11 +185,13 @@ final class AppUpdater: ObservableObject {
         _ = try output.seekToEnd()
         try output.write(contentsOf: Data(("\(Date().ISO8601Format()) \(executable) \(arguments.joined(separator: " "))\n").utf8))
         process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         if let directory {
             process.currentDirectoryURL = directory
-            var environment = ProcessInfo.processInfo.environment
-            environment["PYTHONPATH"] = directory.path; process.environment = environment
+            environment["PYTHONPATH"] = directory.path
         }
+        process.environment = environment
         process.standardOutput = output; process.standardError = output
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
