@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-TARGETS = [ROOT / "anime_dubber", ROOT / "dubcanvas", ROOT / "tests"]
+TARGETS = [ROOT / "anime_dubber", ROOT / "dubcanvas", ROOT / "tests", ROOT / "tools"]
 errors = []
 count = 0
 

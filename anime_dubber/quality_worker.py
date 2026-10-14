@@ -75,7 +75,7 @@ def load(role, q):
         import torch
         _loaded.to(torch.device("cpu"))
     elif role == "separator":
-        from .quality_models import file_digest
+        from .quality_models import file_digest, bandit_state_dict
         for key, expected in (("bandit_checkpoint", "bandit_sha256"), ("bandit_config", "bandit_config_sha256")):
             if file_digest(q[key]) != q[expected]:
                 raise ValueError(f"Audited {key} checksum mismatch")
@@ -88,9 +88,7 @@ def load(role, q):
         config = OmegaConf.create(yaml.load(Path(q["bandit_config"]).read_text(encoding="utf-8"), Loader=yaml.FullLoader))
         model = Bandit(**dict(config.kwargs))
         state = torch.load(q["bandit_checkpoint"], map_location="cpu", weights_only=True)
-        for key in ("state", "state_dict", "model_state_dict"):
-            if key in state:
-                state = state[key]
+        state = bandit_state_dict(state)
         model.load_state_dict(state, strict=True)
         requested = q["separator_device"]
         device = ("mps" if torch.backends.mps.is_available() else "cpu") if requested == "auto" else requested

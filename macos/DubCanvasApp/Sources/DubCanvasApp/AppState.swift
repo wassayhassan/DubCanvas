@@ -10,6 +10,29 @@ final class AppState: ObservableObject {
     static var hasRunningJobs: Bool {
         instances.contains { $0.value.map { $0.activeJobID != nil || $0.startPending || $0.jobStartPending } ?? false }
     }
+    static func completeManagedSetup(quality: Bool) {
+        for instance in instances {
+            guard let state = instance.value else { continue }
+            state.loadManagedQualitySettings(overwrite: quality)
+            if quality { state.pipelineProfile = "quality_v1"; state.savePreferences() }
+            state.backend.stop()
+            state.backendState = .disconnected
+            Task { @MainActor [weak state] in
+                try? await Task.sleep(for: .milliseconds(700))
+                state?.connectBackend()
+            }
+        }
+    }
+    private func loadManagedQualitySettings(overwrite: Bool = false) {
+        let path = ManagedSetup.directory.appendingPathComponent("quality-settings.json")
+        guard overwrite || (parsedQualitySettings?["mlx_python"] as? String ?? "").isEmpty,
+              let data = try? Data(contentsOf: path),
+              let installed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        var settings = parsedQualitySettings ?? [:]
+        settings.merge(installed) { _, new in new }
+        if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]),
+           let text = String(data: data, encoding: .utf8) { qualitySettingsJSON = text }
+    }
     static func shutdownAllForUpdate() { for instance in instances { instance.value?.backend.stop() } }
     @Published var selection: SidebarDestination? = .projects
 
@@ -157,7 +180,8 @@ final class AppState: ObservableObject {
         Self.instances.append(WeakState(self))
         loadPreferences()
         elevenLabsAPIKey = KeychainStore.string(for: "elevenlabs-api-key") ?? ""
-        connectBackend()
+        loadManagedQualitySettings()
+        if !ManagedSetup.shared.needsSetup { connectBackend() }
     }
 
     deinit {
@@ -165,6 +189,7 @@ final class AppState: ObservableObject {
     }
 
     var canStartJob: Bool {
+        guard !ManagedSetup.shared.busy else { return false }
         guard case .ready = backendState else { return false }
         return currentProject != nil && activeJobID == nil && !jobStartPending
     }

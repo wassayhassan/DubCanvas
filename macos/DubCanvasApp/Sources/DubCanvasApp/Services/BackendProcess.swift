@@ -65,6 +65,8 @@ final class BackendProcess {
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONUNBUFFERED"] = "1"
         environment["PYTHONPATH"] = backendRoot.path
+        if let token = KeychainStore.string(for: "huggingface-token"), !token.isEmpty { environment["HF_TOKEN"] = token }
+
         var searchPaths = (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
             .split(separator: ":").map(String.init)
         for directory in ["/usr/local/bin", "/opt/homebrew/bin"] {
@@ -73,6 +75,9 @@ final class BackendProcess {
             }
         }
         environment["PATH"] = searchPaths.joined(separator: ":")
+        if let resources = Bundle.main.resourceURL {
+            environment = Self.bundledToolsEnvironment(resources: resources, environment: environment)
+        }
         process.environment = environment
 
         process.standardInput = input
@@ -162,6 +167,21 @@ final class BackendProcess {
         }
     }
 
+    static func bundledToolsEnvironment(resources: URL, environment: [String: String]) -> [String: String] {
+        var result = environment
+        let tools = resources.appendingPathComponent("tools")
+        let library = tools.appendingPathComponent("lib/libespeak-ng.1.dylib")
+        let data = tools.appendingPathComponent("share/espeak-ng-data")
+        if FileManager.default.fileExists(atPath: tools.path) {
+            result["PATH"] = tools.path + ":" + (result["PATH"] ?? "/usr/bin:/bin")
+        }
+        if FileManager.default.isReadableFile(atPath: library.path) && FileManager.default.fileExists(atPath: data.path) {
+            result["PHONEMIZER_ESPEAK_LIBRARY"] = library.path
+            result["ESPEAK_DATA_PATH"] = data.path
+        }
+        return result
+    }
+
     private func consumeStdout(_ data: Data) {
         stdoutBuffer.append(data)
 
@@ -239,6 +259,10 @@ final class BackendProcess {
             return PythonLaunch(url: candidate, arguments: [])
         }
 
+        if ManagedSetup.coreReady(at: backendRoot) {
+            return PythonLaunch(url: ManagedSetup.directory.appendingPathComponent("core/bin/python"), arguments: [])
+        }
+
         if let resources = Bundle.main.resourceURL {
             let futureRuntime = resources.appendingPathComponent("python/bin/python3")
             if fileManager.isExecutableFile(atPath: futureRuntime.path) {
@@ -251,7 +275,7 @@ final class BackendProcess {
             .standardizedFileURL
         if bundleBackend?.path == backendRoot.standardizedFileURL.path {
             throw BackendProcessError.runtimeNotFound(
-                "This app bundle was built without the embedded backend environment. Rebuild it with macos/package_app.sh after running setup.sh."
+                "This app bundle was built without the embedded backend environment. Use the app’s setup screen to download its runtime."
             )
         }
 

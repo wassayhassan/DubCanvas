@@ -21,7 +21,7 @@ struct DubCanvasApp: App {
     var body: some Scene {
         Group {
             Window("Welcome to DubCanvas", id: "welcome") {
-                ProjectsView()
+                SetupGate { ProjectsView() }
                     .environmentObject(libraryState)
                     .frame(minWidth: 760, minHeight: 540)
             }
@@ -59,7 +59,7 @@ private struct WorkspaceWindow: View {
     @State private var openedProject = false
 
     var body: some View {
-        RootView()
+        SetupGate { RootView() }
             .environmentObject(state)
             .onAppear {
                 guard !initialized else { return }
