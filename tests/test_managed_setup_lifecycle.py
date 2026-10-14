@@ -15,10 +15,10 @@ class ManagedSetupLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             pid_file = Path(td) / 'worker.pid'
             parent = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
-            worker_code = "import os,time; from pathlib import Path; Path(%r).write_text(str(os.getpid())); time.sleep(60)" % str(pid_file)
-            installer_code = "import signal,sys; from tools.managed_setup import run,interrupted; signal.signal(signal.SIGTERM,interrupted); run([sys.executable,'-c',sys.argv[1]])"
+            worker_code = "import os,time,signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); from pathlib import Path; Path(%r).write_text(str(os.getpid())); time.sleep(60)" % str(pid_file)
+            installer_code = "import signal,sys,threading; from tools.managed_setup import run,interrupted,monitor_parent; signal.signal(signal.SIGTERM,interrupted); threading.Thread(target=monitor_parent,args=(int(sys.argv[2]),),daemon=True).start(); run([sys.executable,'-c',sys.argv[1]])"
             child = subprocess.Popen(['/bin/sh', str(supervisor), str(parent.pid), sys.executable,
-                                      '-c', installer_code, worker_code], cwd=root,
+                                      '-c', installer_code, worker_code, str(parent.pid)], cwd=root,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 deadline = time.monotonic() + 10
@@ -31,6 +31,9 @@ class ManagedSetupLifecycleTests(unittest.TestCase):
                 self.assertEqual(child.wait(timeout=10), 130)
                 with self.assertRaises(ProcessLookupError): os.kill(worker_pid, 0)
             finally:
+                if pid_file.exists():
+                    try: os.kill(int(pid_file.read_text()), signal.SIGKILL)
+                    except ProcessLookupError: pass
                 if parent.poll() is None: parent.kill(); parent.wait()
                 if child.poll() is None: child.terminate(); child.wait(timeout=10)
 

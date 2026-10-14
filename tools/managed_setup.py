@@ -40,6 +40,10 @@ def run(command, *, env=None, timeout=7200):
         _child = None
 
 def interrupted(signum, frame):
+    # The supervisor and parent monitor can signal together. Do not let a
+    # second signal interrupt the bounded worker cleanup in run().
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     if _child is not None and _child.poll() is None:
         os.killpg(_child.pid, signal.SIGTERM)
     raise KeyboardInterrupt
@@ -197,6 +201,7 @@ def main():
     parser.add_argument('--parent-pid', type=int)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
     if args.parent_pid is not None:
         if args.parent_pid <= 1: parser.error("Invalid parent process")
         threading.Thread(target=monitor_parent, args=(args.parent_pid,), daemon=True).start()
