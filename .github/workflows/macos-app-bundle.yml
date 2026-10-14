@@ -24,8 +24,11 @@ jobs:
           target="$(zsh macos/package_app.sh --install-to "$RUNNER_TEMP/DubCanvas Test.app" --print-install-target | tail -1)"
           test "$target" = "$RUNNER_TEMP/DubCanvas Test.app"
 
+      - name: Install packaging tools
+        run: brew install uv ffmpeg rubberband espeak-ng
+
       - name: Build signed universal update bundle
-        run: zsh macos/package_app.sh --no-embed-venv --universal
+        run: zsh macos/package_app.sh --no-embed-venv --universal --managed-tools
 
       - name: Validate bundle
         run: |
@@ -35,6 +38,10 @@ jobs:
           test -f dist/DubCanvas.app/Contents/Resources/backend/anime_dubber/core.py
           test -f dist/DubCanvas.app/Contents/Resources/backend/dubcanvas/__main__.py
           test -f dist/DubCanvas.app/Contents/Resources/backend/tools/install_quality.py
+          test -f dist/DubCanvas.app/Contents/Resources/backend/tools/managed_setup.py
+          test -x dist/DubCanvas.app/Contents/Resources/tools/uv
+          test -x dist/DubCanvas.app/Contents/Resources/tools/ffmpeg
+          test -x dist/DubCanvas.app/Contents/Resources/tools/rubberband
           test -f dist/DubCanvas.app/Contents/Resources/backend/requirements-quality-audio.txt
           test -f dist/DubCanvas.app/Contents/Resources/backend/docs/quality-pipeline.md
           plutil -lint dist/DubCanvas.app/Contents/Info.plist
@@ -42,6 +49,16 @@ jobs:
           test "$(plutil -extract DubCanvasSourceRevision raw dist/DubCanvas.app/Contents/Info.plist)" = "$GITHUB_SHA"
           lipo dist/DubCanvas.app/Contents/MacOS/DubCanvas -verify_arch arm64 x86_64
           codesign --verify --deep --strict dist/DubCanvas.app
+
+      - name: Test managed first-install runtime without Homebrew Python
+        run: |
+          export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/managed-runtime/python"
+          export UV_CACHE_DIR="$RUNNER_TEMP/managed-runtime/cache"
+          export PYTHONPATH="$PWD/dist/DubCanvas.app/Contents/Resources/backend"
+          export PATH="$PWD/dist/DubCanvas.app/Contents/Resources/tools:/usr/bin:/bin:/usr/sbin:/sbin"
+          uv run --no-project --managed-python --python 3.13 python dist/DubCanvas.app/Contents/Resources/backend/tools/managed_setup.py --directory "$RUNNER_TEMP/managed-runtime" --uv "$PWD/dist/DubCanvas.app/Contents/Resources/tools/uv"
+          test -f "$RUNNER_TEMP/managed-runtime/core-ready.json"
+          "$RUNNER_TEMP/managed-runtime/core/bin/python" -c 'import kokoro, anime_dubber.application'
 
       - name: Test update verification and staging
         run: swift test --package-path macos/DubCanvasApp

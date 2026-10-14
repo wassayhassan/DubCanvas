@@ -4,15 +4,22 @@ DubCanvas creates subtitles and multilingual dubs for videos. The macOS app orga
 
 ## Get started on macOS
 
-Requires an Apple silicon Mac running macOS 14 or later. Install FFmpeg if setup asks for it, then run:
+Requires an Apple Silicon Mac running macOS 14 or later.
+
+1. Download the newest ZIP from [DubCanvas automatic updates](https://github.com/wassayhassan/DubCanvas/releases/tag/app-updates).
+2. Unzip it and move **DubCanvas.app** into **Applications**.
+3. Open DubCanvas and choose **Download and Set Up**. The app installs its own Python runtime, audio tools, dependencies and settings without Terminal, Homebrew or Xcode on your Mac.
+4. On Macs with at least 48 GB memory, the setup screen offers the experimental Chinese → English Quality Pipeline. Accept the speaker model access conditions and enter your Hugging Face read token once. The app manages the isolated runtimes, pinned model downloads and configuration automatically. Model downloads are large; keep internet connected and allow storage for video work. Setup progress and logs are available in the app. Retry reuses completed environments and cached model downloads.
+
+Standard processing works on smaller Apple Silicon Macs. The quality model stack remains experimental and requires a first-video test on your hardware. Optional reference cloning and cloud providers require their own credentials/configuration.
+
+For source builds and development:
 
 ```bash
 git clone https://github.com/wassayhassan/DubCanvas.git
 cd DubCanvas
 zsh setup.sh
 ```
-
-Setup installs dependencies, runs checks, and installs the app in `/Applications`. Open the app from Finder or Spotlight. The installed app bundle is named `DubCanvas.app`. Existing installs of `AnimeDubber.app` can be removed after confirming the new app works.
 
 1. Choose **New Project** and add a local video or video page URL.
 2. Choose a target language and start the first dub, or create the project with subtitles only.

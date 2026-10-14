@@ -29,6 +29,9 @@ struct QualitySettingsView: View {
                 Text("Quality v1 requires isolated Apple Silicon workers and audited model assets. Existing projects and casts keep their settings. It has not been benchmarked on your Mac.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Automatic Installation") {
+                ManagedSetupView()
+            }
             Section("Setup Verification") {
                 Button("Check Quality Setup") { state.checkQualitySetup() }
                 Button("Open Setup Guide") {
@@ -55,14 +58,14 @@ struct QualitySettingsView: View {
                 Text("Translation and review run sequentially. Worker memory ceiling: 36 GB; system target: 42 GB. Context budget: 4,096 tokens. Actual Metal footprint and performance require Mac testing.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Worker Environments") {
+            DisclosureGroup("Advanced worker paths") {
                 TextField("Audio Python path", text: string("mlx_python"))
                 TextField("Translation Python path", text: string("translation_python"))
                 TextField("Review Python path", text: string("review_python"))
                 TextField("BandIt Python path", text: string("separator_python"))
                 TextField("Diarization / Kokoro Python path", text: string("torch_python"))
             }
-            Section("Audited Separation and Translation Assets") {
+            DisclosureGroup("Advanced model asset paths") {
                 TextField("MSST checkout", text: string("msst_path"))
                 TextField("BandIt v2 config", text: string("bandit_config"))
                 TextField("Config SHA-256", text: string("bandit_config_sha256"))

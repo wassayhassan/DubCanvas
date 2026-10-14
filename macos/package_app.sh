@@ -18,10 +18,12 @@ PRINT_TARGET=0
 OPEN_APP=0
 SIGN=1
 UNIVERSAL=0
+MANAGED_TOOLS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-embed-venv) EMBED_VENV=0 ;;
+    --managed-tools) MANAGED_TOOLS=1 ;;
     --install) INSTALL=1 ;;
     --print-install-target) PRINT_TARGET=1 ;;
     --install-to)
@@ -41,6 +43,7 @@ while [[ $# -gt 0 ]]; do
 Usage: ./macos/package_app.sh [options]
 
 Options:
+  --managed-tools Bundle tools for in-app first-launch setup.
   --no-embed-venv  Build a lightweight app bundle for CI/development.
   --install        Install to /Applications, replacing the existing app there.
                    Remove an old ~/Applications copy after installation succeeds.
@@ -145,6 +148,10 @@ cp "$ROOT/verify_source.py" "$BACKEND/verify_source.py"
 cp "$ROOT/macos/install_update.sh" "$RESOURCES/install_update.sh"
 find "$BACKEND" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 find "$BACKEND" -name '*.pyc' -delete 2>/dev/null || true
+
+if [[ "$MANAGED_TOOLS" -eq 1 ]]; then
+  python3 "$ROOT/tools/bundle_macos_tools.py" "$RESOURCES/tools"
+fi
 
 if [[ "$EMBED_VENV" -eq 1 ]]; then
   echo "Embedding the existing Python environment (this is the large part of the app)…"

@@ -35,3 +35,15 @@ jobs:
           python -m pip check
       - name: Smoke-test APIs without model weights
         run: python tools/smoke_quality_runtime.py ${{ matrix.role }}
+      - name: Verify official separation checkpoint with safe loading
+        if: matrix.role == 'separator'
+        run: |
+          python - <<'PYCODE'
+          from pathlib import Path
+          import os
+          import torch
+          from tools.managed_setup import download
+          path = Path(os.environ['RUNNER_TEMP']) / 'checkpoint-multi.ckpt'
+          download('https://zenodo.org/records/12701995/files/checkpoint-multi.ckpt?download=1', path, md5='fea2868787551b0cff36cfcf7c3622a3')
+          torch.load(path, map_location='cpu', weights_only=True)
+          PYCODE

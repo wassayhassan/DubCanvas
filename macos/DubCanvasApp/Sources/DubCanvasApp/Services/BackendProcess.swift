@@ -65,12 +65,19 @@ final class BackendProcess {
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONUNBUFFERED"] = "1"
         environment["PYTHONPATH"] = backendRoot.path
+        if let token = KeychainStore.string(for: "huggingface-token"), !token.isEmpty { environment["HF_TOKEN"] = token }
+
         var searchPaths = (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
             .split(separator: ":").map(String.init)
         for directory in ["/usr/local/bin", "/opt/homebrew/bin"] {
             if FileManager.default.fileExists(atPath: directory), !searchPaths.contains(directory) {
                 searchPaths.insert(directory, at: 0)
             }
+        }
+        if let resources = Bundle.main.resourceURL {
+            searchPaths.insert(resources.appendingPathComponent("tools").path, at: 0)
+            environment["PHONEMIZER_ESPEAK_LIBRARY"] = resources.appendingPathComponent("tools/lib/libespeak-ng.1.dylib").path
+            environment["ESPEAK_DATA_PATH"] = resources.appendingPathComponent("tools/share/espeak-ng-data").path
         }
         environment["PATH"] = searchPaths.joined(separator: ":")
         process.environment = environment
@@ -231,6 +238,9 @@ final class BackendProcess {
 
     private func locatePython(for backendRoot: URL) throws -> PythonLaunch {
         let fileManager = FileManager.default
+        if ManagedSetup.coreReady(at: backendRoot) {
+            return PythonLaunch(url: ManagedSetup.directory.appendingPathComponent("core/bin/python"), arguments: [])
+        }
         let embeddedCandidates = [
             backendRoot.appendingPathComponent(".venv/bin/python"),
             backendRoot.appendingPathComponent(".venv/bin/python3"),
@@ -251,7 +261,7 @@ final class BackendProcess {
             .standardizedFileURL
         if bundleBackend?.path == backendRoot.standardizedFileURL.path {
             throw BackendProcessError.runtimeNotFound(
-                "This app bundle was built without the embedded backend environment. Rebuild it with macos/package_app.sh after running setup.sh."
+                "This app bundle was built without the embedded backend environment. Use the app’s setup screen to download its runtime."
             )
         }
 

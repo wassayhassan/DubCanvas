@@ -64,6 +64,7 @@ final class AppUpdater: ObservableObject {
 
     func installApprovedUpdate(closeUpdateWindow: () -> Void) async {
         guard !busy, let manifest = offeredUpdate else { return }
+        guard !ManagedSetup.shared.busy else { error = "Wait for app setup to finish before updating."; return }
         guard !AppState.hasRunningJobs else { error = "Finish or pause all running jobs before updating."; return }
         busy = true; error = nil
         var work: URL?
@@ -75,8 +76,8 @@ final class AppUpdater: ObservableObject {
             guard target.pathExtension == "app", fm.isWritableFile(atPath: target.deletingLastPathComponent().path) else {
                 throw UpdateFailure("Move DubCanvas to a writable Applications folder before updating.")
             }
-            guard fm.fileExists(atPath: target.appendingPathComponent("Contents/Resources/backend/.venv/bin/python").path) else {
-                throw UpdateFailure("Automatic updates require an app built with its Python environment. Rebuild once using macos/package_app.sh.")
+            guard fm.fileExists(atPath: target.appendingPathComponent("Contents/Resources/backend/.venv/bin/python").path) || fm.isExecutableFile(atPath: ManagedSetup.directory.appendingPathComponent("core/bin/python").path) else {
+                throw UpdateFailure("Complete the app’s automatic setup before updating.")
             }
             let directory = fm.temporaryDirectory.appendingPathComponent("DubCanvas-update-\(UUID().uuidString)")
             work = directory
@@ -152,15 +153,23 @@ final class AppUpdater: ObservableObject {
         }
         do {
             try run("/usr/bin/ditto", [app.path, staged.path], logURL: logURL)
-            try run("/usr/bin/ditto", [current.appendingPathComponent("Contents/Resources/backend/.venv").path,
-                                      staged.appendingPathComponent("Contents/Resources/backend/.venv").path], logURL: logURL)
-            let backend = staged.appendingPathComponent("Contents/Resources/backend")
-            let python = backend.appendingPathComponent(".venv/bin/python").path
-            if requirementsChanged {
-                try run(python, ["-m", "pip", "install"] + requirementNames.flatMap { ["-r", backend.appendingPathComponent($0).path] }, logURL: logURL, directory: backend, timeout: 1800)
+            if fm.isExecutableFile(atPath: current.appendingPathComponent("Contents/Resources/backend/.venv/bin/python").path) {
+                try run("/usr/bin/ditto", [current.appendingPathComponent("Contents/Resources/backend/.venv").path,
+                                          staged.appendingPathComponent("Contents/Resources/backend/.venv").path], logURL: logURL)
+                let backend = staged.appendingPathComponent("Contents/Resources/backend")
+                let python = backend.appendingPathComponent(".venv/bin/python").path
+                if requirementsChanged {
+                    try run(python, ["-m", "pip", "install"] + requirementNames.flatMap { ["-r", backend.appendingPathComponent($0).path] }, logURL: logURL, directory: backend, timeout: 1800)
+                }
+                try run(python, ["-m", "pip", "check"], logURL: logURL)
+                try run(python, ["-m", "dubcanvas", "--help"], logURL: logURL, directory: backend)
+            } else {
+                guard fm.isExecutableFile(atPath: staged.appendingPathComponent("Contents/Resources/tools/uv").path) else {
+                    throw UpdateFailure("Update is missing the app-managed installer.")
+                }
+                // Managed runtimes live outside the app. Changed requirements
+                // are reconciled by the setup screen before starting jobs.
             }
-            try run(python, ["-m", "pip", "check"], logURL: logURL)
-            try run(python, ["-m", "dubcanvas", "--help"], logURL: logURL, directory: backend)
             try run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", staged.path], logURL: logURL)
             let helper = work.appendingPathComponent("install_update.sh")
             try fm.copyItem(at: app.appendingPathComponent("Contents/Resources/install_update.sh"), to: helper)

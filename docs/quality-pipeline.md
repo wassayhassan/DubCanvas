@@ -8,7 +8,17 @@ BandIt v2 DnR-v3 dialogue/music/effects separation → pyannote Community-1 over
 
 Actual adapter execution is not the same as passing a model-quality benchmark. The stage's imports/APIs have been checked against primary implementation sources; model parity, audio quality and hardware performance remain release gates. Read [the requirement checklist](quality-pipeline-checklist.md) for the precise status of each acceptance criterion.
 
-## Setup on an Apple Silicon Mac
+## App-managed installation
+
+Download the current signed app ZIP, move the app into Applications and open it. The first-launch setup screen provisions app-owned Python and model environments through bundled uv, with FFmpeg, Rubber Band and phonemizer tooling inside the app. No user-installed Python, Homebrew, Git or Xcode is required. Model weights are downloaded from their original sources, not bundled. At least 48 GB memory is required for the selected quality models. The user accepts Community-1 access conditions and supplies a Hugging Face read token; the token is stored in Keychain and passed through environment variables, not command-line arguments.
+
+Setup owns ~/Library/Application Support/DubCanvas/Runtime. It saves progress logs under ~/Library/Logs/DubCanvas. A nonblocking process lock prevents duplicate installers. Validated core requirements are fingerprinted; worker requirements select separate versioned directories. Retrying repairs partial environments and reuses Hub caches. Settings are published atomically only after downloads, adapter checks, speaker access, safe checkpoint loading and configuration preflight pass. These checks still do not prove complete model inference, bilingual quality or M5 performance.
+
+The five model runtimes separate audio MLX 0.31.2, translation MLX 0.31.2/MLX-LM, review MLX 0.32.0/MLX-VLM, BandIt PyTorch on Python 3.13, and pyannote/Kokoro on Python 3.12. Kokoro excludes Python 3.13; combining everything introduces incompatible dependencies. These directories are internal; users do not configure paths. The core app backend remains separate from model workers.
+
+In-app updates preserve managed runtimes and model caches outside the app. Changed core requirements are reconciled before backend jobs start. Existing embedded environments remain supported. Advanced manual settings remain available below the automatic installer in Settings → Quality Pipeline.
+
+## Manual setup for development on an Apple Silicon Mac
 
 Use native ARM64 Python 3.13 plus Python 3.12 for the diarization/Kokoro environment. Kokoro 0.9.4 explicitly excludes Python 3.13; this was caught by native ARM64 dependency CI. Do not upgrade the existing Chatterbox environment to install this profile.
 
