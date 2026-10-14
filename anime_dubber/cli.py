@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("source", help="YouTube URL or local video path")
         p.add_argument("-o", "--output", default=default_output_dir())
         p.add_argument("--series-id", default="")
+        p.add_argument("--pipeline-profile", choices=["legacy", "quality_v1"], default="legacy")
+        p.add_argument("--quality-settings", type=Path, help="Quality worker/model/settings JSON file")
         p.add_argument("--target-language", choices=list(TARGET_LANGUAGES), default="en")
         p.add_argument("--source-language", default="auto", help="Source language code, or auto to detect it")
         p.add_argument("--dub-name", default="", help="Name of this dub version")
@@ -103,6 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = sub.add_parser("analyze", help="Analyze characters and write the character map")
     add_job_args(analyze)
 
+    quality_check = sub.add_parser("quality-check", help="Validate quality profile configuration without loading models")
+    quality_check.add_argument("settings", type=Path)
+    quality_check.add_argument("--json", action="store_true")
+
     caps = sub.add_parser("capabilities", help="Show detected platform/provider capabilities")
     caps.add_argument("--json", action="store_true")
 
@@ -146,6 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _payload(args: argparse.Namespace) -> Dict[str, Any]:
     return {
+        "pipeline_profile": args.pipeline_profile,
+        "quality_settings": json.loads(args.quality_settings.read_text()) if args.quality_settings else {},
         "source": args.source,
         "output_dir": str(Path(args.output).expanduser()),
         "series_id": args.series_id,
@@ -240,6 +248,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     service = ApplicationService(event_sink=_print_event)
+
+    if args.command == "quality-check":
+        from .quality_models import options, setup_issues
+        try:
+            q = options(json.loads(args.settings.read_text()))
+            issues = setup_issues(q)
+            print(json.dumps({"ready_for_smoke_test": not issues, "hardware_verified": False,
+                              "issues": issues, "models": q["models"]}, indent=2))
+            return 1 if issues else 0
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
     if args.command == "doctor":
         return _doctor(service)

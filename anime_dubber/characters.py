@@ -43,6 +43,7 @@ class CharacterProfile:
     tts_provider: str = "inherit"  # inherit|auto|chatterbox|kokoro|macos|piper|elevenlabs
     macos_voice: str = ""
     kokoro_voice: str = "auto"
+    qwen_speaker: str = ""
     reference_audio: str = ""
     suggested_reference_audio: str = ""
     auto_reference_enabled: bool = True
@@ -890,6 +891,7 @@ EDITABLE_CHARACTER_FIELDS = {
     "tts_provider",
     "macos_voice",
     "kokoro_voice",
+    "qwen_speaker",
     "reference_audio",
     "auto_reference_enabled",
     "expressiveness",

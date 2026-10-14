@@ -418,6 +418,7 @@ struct CharacterItem: Identifiable, Hashable {
     var ttsProvider: String
     var macosVoice: String
     var kokoroVoice: String
+    var qwenSpeaker: String
     var referenceAudio: String
     let suggestedReferenceAudio: String
     let referenceTiming: [[Double]]
@@ -442,6 +443,7 @@ struct CharacterItem: Identifiable, Hashable {
         ttsProvider = dictionary["tts_provider"] as? String ?? "inherit"
         macosVoice = dictionary["macos_voice"] as? String ?? ""
         kokoroVoice = dictionary["kokoro_voice"] as? String ?? "auto"
+        qwenSpeaker = dictionary["qwen_speaker"] as? String ?? "Aiden"
         referenceAudio = dictionary["reference_audio"] as? String ?? ""
         suggestedReferenceAudio = dictionary["suggested_reference_audio"] as? String ?? ""
         referenceTiming = dictionary["reference_timing"] as? [[Double]] ?? []
@@ -464,6 +466,7 @@ struct CharacterDraft: Equatable {
     var ttsProvider = "inherit"
     var macosVoice = ""
     var kokoroVoice = "auto"
+    var qwenSpeaker = "Aiden"
     var referenceAudio = ""
     var suggestedReferenceAudio = ""
     var autoReferenceEnabled = true
@@ -484,6 +487,7 @@ struct CharacterDraft: Equatable {
         ttsProvider = character.ttsProvider
         macosVoice = character.macosVoice
         kokoroVoice = character.kokoroVoice
+        qwenSpeaker = character.qwenSpeaker
         referenceAudio = character.referenceAudio
         suggestedReferenceAudio = character.suggestedReferenceAudio
         autoReferenceEnabled = character.autoReferenceEnabled
@@ -504,6 +508,7 @@ struct CharacterDraft: Equatable {
             "tts_provider": ttsProvider,
             "macos_voice": macosVoice,
             "kokoro_voice": kokoroVoice,
+            "qwen_speaker": qwenSpeaker,
             "reference_audio": referenceAudio,
             "auto_reference_enabled": autoReferenceEnabled,
             "expressiveness": expressiveness,

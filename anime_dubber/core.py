@@ -130,6 +130,8 @@ class Segment:
 class Config:
     source: str
     output_dir: Path
+    pipeline_profile: str = "legacy"
+    quality_settings: dict = field(default_factory=dict)
     mode: str = "dub"  # subtitles|dub
     target_language: str = "en"
     source_language: str = "zh"  # auto for new jobs; zh preserves old direct Config callers
@@ -417,7 +419,19 @@ def _complete_wav(path: Path, *, minimum_seconds: float = 0.01) -> bool:
             return (frames / handle.getframerate() >= minimum_seconds
                     and path.stat().st_size >= expected + 44)
     except (OSError, EOFError, ValueError, wave.Error, ZeroDivisionError):
-        return False
+        # Python's wave reader rejects IEEE float WAVs used by the quality master.
+        # Validate their actual final frame rather than treating a valid float stem as incomplete.
+        try:
+            import soundfile as sf
+            with sf.SoundFile(str(path)) as handle:
+                if handle.format not in {"WAV", "WAVEX", "RF64"} or handle.frames < 1:
+                    return False
+                if handle.frames / handle.samplerate < minimum_seconds:
+                    return False
+                handle.seek(handle.frames - 1)
+                return len(handle.read(1, always_2d=True)) == 1
+        except (ImportError, OSError, RuntimeError, ValueError):
+            return False
 
 
 def _atomic_media_run(runner: CommandRunner, cmd: List[str], path: Path) -> None:
@@ -2393,6 +2407,9 @@ def recover_source_language(
 def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
     progress = progress or print
     runner = runner or CommandRunner(progress)
+    if config.pipeline_profile == "quality_v1":
+        from .quality_pipeline import run_quality
+        return run_quality(config, progress, runner, analysis=True)
     out = Path(config.output_dir).expanduser().resolve(); out.mkdir(parents=True, exist_ok=True)
     key = source_key(config.source, out)
     work = out / ".anime_dubber_work" / key; work.mkdir(parents=True, exist_ok=True)
@@ -2435,6 +2452,9 @@ def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, ru
 def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
     progress = progress or print
     runner = runner or CommandRunner(progress)
+    if config.pipeline_profile == "quality_v1":
+        from .quality_pipeline import run_quality
+        return run_quality(config, progress, runner)
     out = Path(config.output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     key = source_key(config.source, out)
@@ -2694,13 +2714,13 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         saved_fix = timing_fixes.get(str(i + 1), {})
         saved_tempo = (min(1.5, float(saved_fix.get("max_tempo", 1.0)))
                        if isinstance(saved_fix, dict) and saved_fix.get("source") == seg.text
-                       and saved_fix.get("replacement") == seg.translated else 1.0)
+                       and saved_fix.get("replacement") == seg.translated and not saved_fix.get("allow_overlap") else 1.0)
         saved_overlap = (isinstance(saved_fix, dict) and saved_fix.get("source") == seg.text
                          and saved_fix.get("replacement") == seg.translated
                          and saved_fix.get("allow_overlap") is True)
         try:
             clips.append(prepare_tts_clip(seg, i, tts_dir, config, runner, progress,
-                                          profile=profile, next_start=None if saved_overlap else next_start,
+                                          profile=profile, next_start=next_start,
                                           **({"max_tempo": saved_tempo} if saved_tempo > 1.0 else {})))
         except TimingOverlapError as issue:
             original = seg.translated
@@ -2806,34 +2826,15 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
                     except (OSError, ValueError):
                         pass
                 continue
-            # Complete the dub even when the available gap is physically too
-            # short at 1.5x. Keep all spoken words and report the audible overlap.
-            # The last line may extend the video with a held final frame below.
-            fallback = min(measured_options, key=lambda option: option[1])
-            seg.translated = fallback[0]
-            trial = Segment.from_dict(seg.to_dict())
-            progress(f"Warning: line {i + 1} cannot fit even at 1.5×; retaining its full voice clip")
-            clip = prepare_tts_clip(trial, i, tts_dir, config, runner, progress,
-                                    profile=profile, next_start=None, max_tempo=1.5)
-            clips.append(clip)
-            timing_fixes[str(i + 1)] = {"source": seg.text, "original": original,
-                                        "replacement": fallback[0], "allow_overlap": True,
-                                        "available": round(issue.available, 3), "max_tempo": 1.5}
-            _atomic_json_write(fixes_path, timing_fixes)
-            publish("timing_fixes", fixes_path, config.target_language)
-            if fallback[0] != original:
-                write_srt(segments, en_srt, translated=True)
-                write_vtt(segments, en_vtt, translated=True)
-                publish("translated_srt", en_srt, config.target_language)
-                publish("translated_vtt", en_vtt, config.target_language)
-            if timing_path.exists():
-                try:
-                    existing_issues = json.loads(timing_path.read_text(encoding="utf-8"))
-                    existing_issues.pop(str(i + 1), None)
-                    _atomic_json_write(timing_path, existing_issues)
-                except (OSError, ValueError):
-                    pass
-            continue
+            _atomic_json_write(timing_path, {str(i + 1): {
+                "cue": i + 1, "source": seg.text, "attempted_translation": original,
+                "duration": latest_issue.duration, "available": issue.available,
+                "reason": "No intelligible meaning-preserving timing fit within 1.5x",
+                "repair_errors": repair_errors,
+            }})
+            publish("timing_report", timing_path, config.target_language)
+            raise PipelineError(f"Line {i + 1} cannot fit safely within 1.5×; subtitles and voice checkpoints saved. "
+                                "No overlapping dub will be rendered.")
         if timing_path.exists():
             try:
                 previous_issues = json.loads(timing_path.read_text(encoding="utf-8"))

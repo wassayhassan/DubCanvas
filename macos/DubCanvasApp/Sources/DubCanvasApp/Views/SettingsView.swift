@@ -19,6 +19,10 @@ struct SettingsView: View {
                 .tabItem { Label("Providers", systemImage: "cpu") }
                 .tag("providers")
 
+            QualitySettingsView()
+                .tabItem { Label("Quality Pipeline", systemImage: "waveform.badge.magnifyingglass") }
+                .tag("quality")
+
             backend
                 .tabItem { Label("Backend", systemImage: "server.rack") }
                 .tag("backend")

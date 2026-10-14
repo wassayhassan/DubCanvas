@@ -36,7 +36,7 @@ class DiagnosticLog:
         self.secrets = [str(v) for k, v in config.items() if
                         any(term in k.lower() for term in ("api_key", "password", "token", "secret")) and v]
         self.secrets += [value for key, value in os.environ.items() if value and
-                         key in {"ELEVENLABS_API_KEY", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"}]
+                         key in {"ELEVENLABS_API_KEY", "DUBCANVAS_QWEN_API_KEY", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"}]
         versions = {}
         for package in ("numpy", "opencv-python-headless", "mlx-whisper", "mlx-lm", "faster-whisper", "torch", "chatterbox-tts", "demucs"):
             try:

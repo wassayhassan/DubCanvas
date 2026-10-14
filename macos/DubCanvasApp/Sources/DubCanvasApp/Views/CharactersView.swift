@@ -151,6 +151,8 @@ private struct CharacterInspector: View {
     private let ageGroups = ["child", "adult", "older"]
     private let engines = [
         ("inherit", "App Default"),
+        ("qwen", "Qwen · Quality Profile"),
+        ("index_clone", "IndexTTS · Optional Clone"),
         ("auto", "Automatic · Best Local"),
         ("chatterbox", "Chatterbox Voice Clone"),
         ("kokoro", "Kokoro"),
@@ -234,6 +236,15 @@ private struct CharacterInspector: View {
                                 .foregroundStyle(.secondary)
                         }
 
+                        if state.characterDraft.ttsProvider == "qwen" {
+                            Picker("Preset speaker", selection: $state.characterDraft.qwenSpeaker) {
+                                ForEach(["Aiden", "Ryan", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna", "Sohee"], id: \.self) { speaker in
+                                    Text(speaker).tag(speaker)
+                                }
+                            }
+                            Text("Aiden is the American English preset. Other presets need accent validation.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         if usesChatterbox {
                             if !state.characterDraft.suggestedReferenceAudio.isEmpty {
                                 VStack(alignment: .leading, spacing: 8) {

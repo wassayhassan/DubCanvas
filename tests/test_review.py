@@ -187,7 +187,7 @@ class ReviewTests(unittest.TestCase):
         self.assertIn("3.29s", prompts[0])
         self.assertIn("2.82s", prompts[0])
 
-    def test_unfittable_speech_completes_with_overlap_warning(self):
+    def test_unfittable_speech_blocks_render_and_preserves_subtitles(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             video = base / "source.mp4"; video.write_bytes(b"video")
@@ -224,12 +224,14 @@ class ReviewTests(unittest.TestCase):
                  patch("anime_dubber.core.build_dialogue_safe_background", return_value=audio), \
                  patch("anime_dubber.core.mix_background_and_dub", return_value=audio), \
                  patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_: dest.write_bytes(b"video")):
-                result = run_pipeline(cfg, warnings.append, runner)
-                resumed = run_pipeline(cfg, warnings.append, runner)
-            self.assertEqual(generated, ["A long greeting"] * 5)
-            self.assertTrue(any("cannot fit" in message for message in warnings))
-            self.assertIn("A long greeting", result["translated_srt"].read_text(encoding="utf-8"))
-            self.assertTrue(resumed["dubbed_video"].exists())
+                with self.assertRaisesRegex(PipelineError, "cannot fit safely"):
+                    run_pipeline(cfg, warnings.append, runner)
+                with self.assertRaisesRegex(PipelineError, "cannot fit safely"):
+                    run_pipeline(cfg, warnings.append, runner)
+            self.assertTrue(list((base / "out" / "versions" / "dub_timing").glob("*.srt")))
+            self.assertFalse(list((base / "out" / "versions" / "dub_timing").glob("*DUB.mp4")))
+            self.assertTrue(list((base / "out" / "versions" / "dub_timing").glob("*.timing.json")))
+
 
     def test_flags_source_and_translation_without_changing_srt(self):
         with tempfile.TemporaryDirectory() as temp:

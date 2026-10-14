@@ -28,6 +28,15 @@ final class AppState: ObservableObject {
     @Published var seriesID = ""
     @Published var outputMode: OutputMode = .dub
 
+    @Published var pipelineProfile = "legacy"
+    @Published var qualitySettingsJSON = "{}"
+    @Published var qualitySetupReport = ""
+
+    var parsedQualitySettings: [String: Any]? {
+        guard let data = qualitySettingsJSON.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
     @Published var asrProvider: ASRProvider = .auto
     @Published var mlxWhisperModel = "mlx-community/whisper-large-v3-mlx"
     @Published var fasterWhisperModel = "large-v3"
@@ -196,7 +205,9 @@ final class AppState: ObservableObject {
             seriesContext: seriesContext,
             backgroundVolume: backgroundVolume,
             dubVolume: dubVolume,
-            backgroundDucking: backgroundDucking
+            backgroundDucking: backgroundDucking,
+            pipelineProfile: pipelineProfile,
+            qualitySettingsJSON: qualitySettingsJSON
         )
     }
 
@@ -236,7 +247,9 @@ final class AppState: ObservableObject {
             seriesContext: seriesContext,
             backgroundVolume: backgroundVolume,
             dubVolume: dubVolume,
-            backgroundDucking: backgroundDucking
+            backgroundDucking: backgroundDucking,
+            pipelineProfile: pipelineProfile,
+            qualitySettingsJSON: qualitySettingsJSON
         ).save()
     }
 
@@ -294,6 +307,16 @@ final class AppState: ObservableObject {
         backgroundVolume = preferences.backgroundVolume
         dubVolume = preferences.dubVolume
         backgroundDucking = preferences.backgroundDucking
+        pipelineProfile = preferences.pipelineProfile ?? "legacy"
+        qualitySettingsJSON = preferences.qualitySettingsJSON ?? "{}"
+    }
+
+    func checkQualitySetup() {
+        guard let settings = parsedQualitySettings else { qualitySetupReport = "Invalid JSON settings."; return }
+        do {
+            qualitySetupReport = "Checking configuration…"
+            _ = try backend.send(method: "quality_check", params: ["settings": settings], id: "quality-check-\(UUID().uuidString)")
+        } catch { qualitySetupReport = error.localizedDescription }
     }
 
     func connectBackend() {
@@ -440,13 +463,13 @@ final class AppState: ObservableObject {
                 return "The video file could not be found. Choose it again or paste a video page link."
             }
         }
-        if voiceProvider == .elevenlabs && elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if pipelineProfile == "legacy" && voiceProvider == .elevenlabs && elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "The selected ElevenLabs voice needs an API key. Add one in Settings before dubbing."
         }
-        if voiceProvider == .piper && piperModel.isEmpty {
+        if pipelineProfile == "legacy" && voiceProvider == .piper && piperModel.isEmpty {
             return "The selected Piper voice needs a model file. Choose one in Advanced settings."
         }
-        if reviewBeforeDub && translationProvider == .whisper {
+        if pipelineProfile == "legacy" && reviewBeforeDub && translationProvider == .whisper {
             return "Automatic subtitle correction needs a local translation model. Change the translation provider in Advanced settings."
         }
         if targetLanguage != "en" {
@@ -501,7 +524,15 @@ final class AppState: ObservableObject {
         savePreferences()
         let threshold: Any = speakerThreshold == 0 ? NSNull() : speakerThreshold
 
+        guard pipelineProfile != "quality_v1" || parsedQualitySettings != nil else {
+            jobStartPending = false
+            jobIssue = "Quality settings must be a valid JSON object."
+            statusText = "Could not start"
+            return
+        }
         let params: [String: Any] = [
+            "pipeline_profile": pipelineProfile,
+            "quality_settings": parsedQualitySettings ?? [:],
             "source": project.source,
             "verify_setup": true,
             "output_dir": project.outputDir,
@@ -727,6 +758,10 @@ final class AppState: ObservableObject {
         targetLanguage = dub.language
         dubName = dub.name + " (new version)"
         let config = dub.config
+        pipelineProfile = config["pipeline_profile"] as? String ?? "legacy"
+        if let quality = config["quality_settings"] as? [String: Any],
+           let data = try? JSONSerialization.data(withJSONObject: quality, options: [.prettyPrinted, .sortedKeys]),
+           let string = String(data: data, encoding: .utf8) { qualitySettingsJSON = string }
         versionVoiceOverrides = config["voice_overrides"] as? [String: [String: String]] ?? [:]
         translationProvider = TranslationProvider(rawValue: config["translation"] as? String ?? "") ?? translationProvider
         voiceProvider = VoiceProvider(rawValue: config["tts_engine"] as? String ?? "") ?? voiceProvider
@@ -857,7 +892,7 @@ final class AppState: ObservableObject {
             : "This is \(characterDraft.displayName) speaking in English."
 
         let inheritedProvider = characterDraft.ttsProvider == "inherit"
-            ? voiceProvider.rawValue
+            ? (pipelineProfile == "quality_v1" ? (parsedQualitySettings?["voice_engine"] as? String ?? "qwen") : voiceProvider.rawValue)
             : characterDraft.ttsProvider
         let reference = !characterDraft.referenceAudio.isEmpty
             ? characterDraft.referenceAudio
@@ -872,6 +907,10 @@ final class AppState: ObservableObject {
                 method: "preview_voice",
                 params: [
                     "provider": inheritedProvider,
+                    "pipeline_profile": pipelineProfile,
+                    "model_id": pipelineProfile == "quality_v1" ? "eleven_v4" : "eleven_v3",
+                    "qwen_speaker": characterDraft.qwenSpeaker,
+                    "quality_settings": parsedQualitySettings ?? [:],
                     "character_id": selectedCharacterID ?? "",
                     "voice": characterDraft.macosVoice,
                     "text": text,
@@ -1053,9 +1092,13 @@ final class AppState: ObservableObject {
             }
             showingSystemCheck = true
 
+        case let id where id.hasPrefix("quality-check-"):
+            let issues = result["issues"] as? [String] ?? []
+            qualitySetupReport = issues.isEmpty ? "Configuration ready for model smoke tests. M5 performance remains unverified." : issues.joined(separator: "\n")
+
         case let id where id.hasPrefix("quick-system-check-"):
             let checks = result["checks"] as? [[String: Any]] ?? []
-            let required = ["ffmpeg", "ffprobe", "demucs"] + (source.hasPrefix("http") ? ["yt-dlp"] : [])
+            let required = (pipelineProfile == "quality_v1" ? ["ffmpeg", "ffprobe"] : ["ffmpeg", "ffprobe", "demucs"]) + (source.hasPrefix("http") ? ["yt-dlp"] : [])
             var missing = required.filter { name in
                 !checks.contains { ($0["name"] as? String) == name && ($0["ok"] as? Bool) == true }
             }
@@ -1064,6 +1107,7 @@ final class AppState: ObservableObject {
             let speech = providers["asr"] as? [String: Bool] ?? [:]
             let translations = providers["translation"] as? [String: Bool] ?? [:]
             let voices = providers["tts"] as? [String: Bool] ?? [:]
+            if pipelineProfile == "legacy" {
             if (asrProvider == .auto && !(speech["mlx_whisper"] == true || speech["faster_whisper"] == true)) ||
                 (asrProvider == .mlxWhisper && speech["mlx_whisper"] != true) ||
                 (asrProvider == .fasterWhisper && speech["faster_whisper"] != true) { missing.append("speech recognition") }
@@ -1080,6 +1124,7 @@ final class AppState: ObservableObject {
             }
             if targetLanguage != "en" && voiceProvider == .auto && voices["chatterbox_multilingual"] != true && elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 missing.append("Chatterbox Multilingual or ElevenLabs API key")
+            }
             }
             if !missing.isEmpty {
                 failQuickStart("Setup needed: \(missing.joined(separator: ", ")). Open System Check for details, then retry.")

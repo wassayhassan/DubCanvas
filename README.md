@@ -54,3 +54,9 @@ If an existing `AnimeDubberOutput` folder is present, the CLI continues using it
 - Keep the project's work folder if you want to pause or resume a dub.
 
 For architecture and detailed design, see [the project workspace notes](docs/PROJECT_WORKSPACE_VNEXT.md) and [the SwiftUI design specification](docs/SWIFTUI_REDESIGN_SPEC.md).
+# Experimental quality dubbing pipeline
+
+Chinese-to-English quality processing is available through **Settings → Quality Pipeline** or CLI `--pipeline-profile quality_v1 --quality-settings quality-settings.json`. It adds independent ASR/meaning checks, expressive fixed-preset voices, isolated model workers, and collision-blocking timing. Existing providers and projects remain available.
+
+Read [setup, behavior and validation limits](docs/quality-pipeline.md) and [the complete requirement checklist](docs/quality-pipeline-checklist.md) before enabling it. Real-model M5 Max performance and bilingual/listening quality have not been benchmarked; the experimental stack is not silently promoted to default.
+

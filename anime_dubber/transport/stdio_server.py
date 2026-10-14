@@ -55,6 +55,8 @@ def serve() -> int:
                 }
             elif method == "capabilities":
                 result = service.capabilities()
+            elif method == "quality_check":
+                result = service.quality_check(params.get("settings") or {})
             elif method == "system_check":
                 result = service.system_check()
             elif method == "list_voices":

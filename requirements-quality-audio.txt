@@ -1,0 +1,6 @@
+# Isolated ARM64 audio environment; never combine with legacy Chatterbox.
+mlx==0.31.2
+mlx-audio[stt,tts]==0.5.9
+mlx-whisper
+soundfile==0.14.0
+psutil==7.2.2
