@@ -87,4 +87,5 @@ class ManagedSetupTests(unittest.TestCase):
         tensor = object()
         self.assertEqual(bandit_state_dict({'state_dict': {'model.band.weight': tensor}}), {'band.weight': tensor})
         self.assertEqual(bandit_state_dict({'band.weight': tensor}), {'band.weight': tensor})
+        self.assertEqual(bandit_state_dict({'state_dict': {'model.band.weight': tensor, 'loss_handler.l1_weight': tensor}}), {'band.weight': tensor})
         with self.assertRaises(ValueError): bandit_state_dict({'state_dict': {'model.band.weight': tensor, 'band.bias': tensor}})

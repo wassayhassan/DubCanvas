@@ -28,10 +28,15 @@ def bandit_state_dict(checkpoint):
             state = state[field]
     if not isinstance(state, dict) or not state or any(not isinstance(key, str) for key in state):
         raise ValueError("BandIt checkpoint has no valid state dictionary")
-    prefixed = [key.startswith("model.") for key in state]
-    if any(prefixed) and not all(prefixed):
-        raise ValueError("BandIt checkpoint mixes wrapper and model parameter names")
-    return {key.removeprefix("model."): value for key, value in state.items()} if all(prefixed) else state
+    if any(key.startswith("model.") for key in state):
+        # The published Lightning state also contains training-only loss
+        # weights. Discard only identified training namespaces; model keys
+        # and shapes still pass PyTorch's strict loading below.
+        unexpected = [key for key in state if not key.startswith(("model.", "loss_handler.", "metric_handler."))]
+        if unexpected:
+            raise ValueError("BandIt checkpoint mixes wrapper and model parameter names")
+        return {key.removeprefix("model."): value for key, value in state.items() if key.startswith("model.")}
+    return state
 
 MODELS = {
     "fallback": {"repo": "mlx-community/whisper-large-v3-mlx", "runtime": "mlx_whisper", "license": "MIT"},
