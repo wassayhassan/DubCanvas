@@ -87,4 +87,14 @@ Final code CI links: [backend](https://github.com/wassayhassan/DubCanvas/actions
 
 Unfinished independent implementation limits remain explicit: source-specific separation/ASR for simultaneous speakers, semantic cross-episode identity/age-sex casting, speech/song/reaction classification and optimized native-duration search lack evaluated model/data support. They are not marked complete. Expanded-video retiming is not enabled; saved no-fit failure is the implemented fallback. Physical M5 Max 48 GB testing, full-episode soak and bilingual/listening quality gates require that hardware and annotated clips. Cloud validation requires credentials. Every other previously recorded blocker remains in force.
 
-Native CI for the continuation must pass before its code is considered verified. PR remains experimental/draft; public update is not published.
+Q05/Q11 follow-up: delivered English captions now end at measured fitted-speech duration, including permitted borrowed silence. Original Chinese timestamps and background replacement windows remain intact. The real-media regression asserts this timing contract. Probe logs use unique run IDs so repeated evaluation does not aggregate earlier runs.
+
+Final continuation code revision: `0c34798a26deafd927d6a935820b6630c7b38eff`.
+
+- [Backend CI](https://github.com/wassayhassan/DubCanvas/actions/runs/38500995969): 209 tests run on each platform, no failures; Ubuntu 3 skips, macOS 27, Windows 30. Ubuntu exercised the real Rubber Band R3 duration/pitch and media integration tests. Windows path-normalization assertion was corrected before this final run.
+- [SwiftUI CI](https://github.com/wassayhassan/DubCanvas/actions/runs/38500995962): build and all 15 tests passed.
+- [Native ARM64 runtimes](https://github.com/wassayhassan/DubCanvas/actions/runs/38500996034): all five installations, dependency checks and API/Metal probes passed. No weights were loaded.
+- [Universal bundle](https://github.com/wassayhassan/DubCanvas/actions/runs/38500995984): package workflow passed; public update publication remains skipped for this draft PR.
+- Local and published source trees were compared and matched exactly. Documentation-only evidence updates do not change the verified code.
+
+These software checks are complete. Model inference/quality, physical M5 Max 48 GB measurements, annotated-media/listening/soak, redistribution and credentialed cloud gates remain BLOCKED. PR remains experimental/draft; public update is not published.
