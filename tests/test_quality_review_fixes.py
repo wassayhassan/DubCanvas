@@ -1,8 +1,8 @@
-import json
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from anime_dubber.core import CommandRunner
 from anime_dubber.localization import Glossary
@@ -48,6 +48,14 @@ class ReviewFixTests(unittest.TestCase):
                 subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'lavfi', '-i',
                     'sine=sample_rate=48000:duration=4', '-c:a', 'aac', str(audio)], check=True)
                 self.assertAlmostEqual(source_duration(source, runner), 4, delta=.05)
-                output = mux_preserving_video(source, audio, root / (codec + '.mp4'), runner, lambda _: None)
+                run = runner.run
+                def reject_unsupported_container(command, **kwargs):
+                    # FFV1-in-MP4 support varies by FFmpeg version. Exercise
+                    # fallback deterministically, then mux and verify real MKV.
+                    if codec == 'ffv1' and command[0] == 'ffmpeg' and command[-1].endswith('.mp4'):
+                        return subprocess.CompletedProcess(command, 1, '', 'Unsupported container')
+                    return run(command, **kwargs)
+                with patch.object(runner, 'run', side_effect=reject_unsupported_container):
+                    output = mux_preserving_video(source, audio, root / (codec + '.mp4'), runner, lambda _: None)
                 self.assertEqual(verify_video_copy(source, output, runner)['packet_count'], 100)
                 if codec == 'ffv1': self.assertEqual(output.suffix, '.mkv')

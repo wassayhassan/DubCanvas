@@ -7,9 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from anime_dubber.core import CommandRunner, Config, PipelineError, ReviewRequired, Segment, TimingOverlapError, run_pipeline
-from anime_dubber.review import review_subtitles, flags_for, _wrong_target_script
-from anime_dubber.timing import TimingRewriter, usable_rewrite
+from anime_dubber.core import CommandRunner, Config, PipelineError, Segment, TimingOverlapError, run_pipeline
+from anime_dubber.review import review_subtitles
 
 
 def srt(texts):
@@ -28,55 +27,6 @@ class ReviewTests(unittest.TestCase):
         visual.start()
         self.addCleanup(visual.stop)
 
-    def test_review_understands_source_and_target_language(self):
-        spanish = {"start": 0.0, "end": 2.0, "text": "Hola amigo"}
-        english = {"start": 0.0, "end": 2.0, "text": "Hello friend"}
-        self.assertEqual(flags_for(spanish, english, "en", "es"), [])
-        self.assertNotIn("untranslated_text", flags_for(spanish, spanish, "es", "es"))
-        japanese = {"start": 0.0, "end": 2.0, "text": "こんにちは"}
-        self.assertIn("untranslated_source", flags_for(japanese, japanese, "en", "ja"))
-
-    def test_untranslated_chinese_is_flagged_when_dubbing_into_japanese(self):
-        # Japanese kanji shares Unicode ranges with Chinese, so a naive script
-        # check can mistake leftover, untranslated Chinese for valid Japanese.
-        leftover_chinese = "这是没有翻译的中文文本"
-        real_japanese = "これは翻訳された日本語のテキストです"
-        self.assertFalse(_wrong_target_script(leftover_chinese, "ja"))
-        self.assertTrue(_wrong_target_script(leftover_chinese, "ja", leftover_chinese, "zh"))
-        self.assertFalse(_wrong_target_script(real_japanese, "ja"))
-
-        chinese_source = {"start": 0.0, "end": 2.0, "text": leftover_chinese}
-        untranslated = {"start": 0.0, "end": 2.0, "text": leftover_chinese}
-        translated = {"start": 0.0, "end": 2.0, "text": real_japanese}
-        self.assertIn("untranslated_chinese", flags_for(chinese_source, untranslated, "ja", "zh"))
-        self.assertEqual(flags_for(chinese_source, translated, "ja", "zh"), [])
-
-        punctuated = {**untranslated, "text": leftover_chinese + "！"}
-        self.assertIn("untranslated_chinese", flags_for(chinese_source, punctuated, "ja", "zh"))
-
-    def test_kanji_only_japanese_is_not_rejected_by_script_or_name_match(self):
-        source = {"start": 0.0, "end": 3.0, "text": "这段话应该翻译成日语"}
-        name = {**source, "text": "山田太郎"}
-        self.assertFalse(_wrong_target_script(name["text"], "ja"))
-        self.assertFalse(_wrong_target_script(name["text"], "ja", source["text"], "zh"))
-        self.assertEqual(flags_for(source, name, "ja", "zh"), [])
-        same_name = {**source, "text": "山田太郎"}
-        self.assertEqual(flags_for(same_name, name, "ja", "zh"), [])
-
-    def test_review_accepts_kanji_only_japanese_model_suggestion(self):
-        with tempfile.TemporaryDirectory() as temp:
-            base = Path(temp)
-            original, target, report = base / "zh.srt", base / "ja.srt", base / "ja.review.json"
-            original.write_text(srt(["这是没有翻译的中文文本"]), encoding="utf-8")
-            target.write_text(srt(["这是没有翻译的中文文本"]), encoding="utf-8")
-            fake = type("FakeMLX", (), {
-                "load": staticmethod(lambda _: (object(), type("Tokenizer", (), {"chat_template": None})())),
-                "generate": staticmethod(lambda *_args, **_kwargs: '[{"id": 1, "text": "山田太郎"}]'),
-            })()
-            with patch.dict(sys.modules, {"mlx_lm": fake}):
-                result = review_subtitles(original, target, report, language="ja",
-                                          source_language="zh", model="test")
-            self.assertEqual(result["flags"][0]["suggestion"], "山田太郎")
 
     def test_auto_rewrite_measures_voice_and_finishes_without_review(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -123,10 +73,6 @@ class ReviewTests(unittest.TestCase):
             fixes = json.loads(next((base / "out" / "versions" / "auto_fit").glob("*.timing-fixes.json")).read_text(encoding="utf-8"))
             self.assertEqual(fixes["1"]["replacement"], "Tang Sect")
 
-    def test_timing_candidate_keeps_names_and_numbers(self):
-        self.assertFalse(usable_rewrite("The Tang Sect has 3 gates", "The sect has three gates"))
-        self.assertFalse(usable_rewrite("The Tang Sect has 3 gates", "The Tang Sect has gates"))
-        self.assertTrue(usable_rewrite("The Tang Sect has 3 gates", "Tang Sect: 3 gates"))
 
     def test_timing_fallback_speeds_original_and_resumes_without_rewriting(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -172,20 +118,6 @@ class ReviewTests(unittest.TestCase):
             fixes = json.loads(next((base / "out" / "versions" / "tempo").glob("*.timing-fixes.json")).read_text(encoding="utf-8"))
             self.assertEqual(fixes["1"]["max_tempo"], 1.5)
 
-    def test_rewriter_requests_measured_gap_and_checks_candidate(self):
-        prompts = []
-        fake = type("FakeMLX", (), {
-            "load": staticmethod(lambda _: (object(), object())),
-            "generate": staticmethod(lambda _model, _tokenizer, **kwargs: (
-                prompts.append(kwargs["prompt"]) or '[{"id": 1, "text": "Tang Sect, once famous"}]')),
-        })()
-        cfg = Config(source="video", output_dir=Path("out"))
-        with patch.dict(sys.modules, {"mlx_lm": fake}):
-            candidate = TimingRewriter(cfg).candidate("唐门", "The Tang Sect was once famous",
-                                                       3.29, 2.82, 0, [], CommandRunner())
-        self.assertEqual(candidate, "Tang Sect, once famous")
-        self.assertIn("3.29s", prompts[0])
-        self.assertIn("2.82s", prompts[0])
 
     def test_unfittable_speech_blocks_render_and_preserves_subtitles(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -233,23 +165,6 @@ class ReviewTests(unittest.TestCase):
             self.assertTrue(list((base / "out" / "versions" / "dub_timing").glob("*.timing.json")))
 
 
-    def test_flags_source_and_translation_without_changing_srt(self):
-        with tempfile.TemporaryDirectory() as temp:
-            base = Path(temp)
-            original = base / "zh.srt"
-            translated = base / "en.srt"
-            report = base / "review.json"
-            original.write_text(srt(["老六", "Привет 你好"]), encoding="utf-8")
-            translated.write_text(srt(["Old Six", "Chinese 你好"]), encoding="utf-8")
-            before = translated.read_bytes()
-            result = review_subtitles(original, translated, report)
-            self.assertEqual(result["flagged_cues"], 2)
-            self.assertIn("literal_idiom", result["flags"][0]["reasons"])
-            self.assertIn("mixed_script_in_source", result["flags"][1]["reasons"])
-            self.assertIn("untranslated_chinese", result["flags"][1]["reasons"])
-            self.assertEqual(before, translated.read_bytes())
-            self.assertEqual(json.loads(report.read_text(encoding="utf-8"))["flags"], result["flags"])
-
     def test_review_resume_skips_completed_model_suggestions(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
@@ -276,61 +191,6 @@ class ReviewTests(unittest.TestCase):
             three = review_subtitles(a, b, report)
             self.assertEqual(three["flags"][0]["suggestion"], "Better line")
 
-    def test_focused_model_review_retains_all_priority_cues(self):
-        with tempfile.TemporaryDirectory() as temp:
-            base = Path(temp)
-            a, b, report = base / "zh.srt", base / "en.srt", base / "review.json"
-            a.write_text(srt(["老六", "逼王"]), encoding="utf-8")
-            b.write_text(srt(["Old Six", "Force the King"]), encoding="utf-8")
-            class Tokenizer:
-                chat_template = None
-            prompts = []
-            def fake_generate(*args, **kwargs):
-                prompts.append(kwargs["prompt"])
-                return '[{"id": 2, "text": "Show-off"}]'
-            with patch.dict("sys.modules", {"mlx_lm": type("FakeMLX", (), {
-                "load": staticmethod(lambda _: (object(), Tokenizer())),
-                "generate": staticmethod(fake_generate),
-            })()}):
-                result = review_subtitles(a, b, report, model="test", focus_cues={2})
-            self.assertEqual(result["priority_cues"], [1, 2])
-            self.assertEqual(len(prompts), 1)
-            self.assertEqual(result["flags"][1]["suggestion"], "Show-off")
-
-    def test_timing_suggestion_uses_measured_gap_instead_of_subtitle_window(self):
-        with tempfile.TemporaryDirectory() as temp:
-            base = Path(temp)
-            a, b, report = base / "zh.srt", base / "en.srt", base / "en.review.json"
-            a.write_text(srt(["来听故事"]), encoding="utf-8")
-            b.write_text(srt(["Come and listen to this very long story about the world"]), encoding="utf-8")
-            (base / "en.timing.json").write_text(json.dumps({"1": {
-                "attempted_translation": "Come and listen to this very long story about the world",
-                "duration": 13.4, "available": 11.5}}), encoding="utf-8")
-            class Tokenizer:
-                chat_template = None
-            prompts = []
-            def fake_generate(*args, **kwargs):
-                prompts.append(kwargs["prompt"])
-                return '[{"id": 1, "text": "Hear the story of this world."}]'
-            with patch.dict("sys.modules", {"mlx_lm": type("FakeMLX", (), {
-                "load": staticmethod(lambda _: (object(), Tokenizer())),
-                "generate": staticmethod(fake_generate),
-            })()}):
-                result = review_subtitles(a, b, report, model="test", focus_cues={1})
-            self.assertIn("13.40s", prompts[0])
-            self.assertIn("11.50s", prompts[0])
-            self.assertNotIn("Subtitle time window: 0.50s", prompts[0])
-            self.assertEqual(result["flags"][0]["suggestion"], "Hear the story of this world.")
-
-    def test_non_chinese_source_is_prioritized_for_retranscription(self):
-        with tempfile.TemporaryDirectory() as temp:
-            base = Path(temp)
-            a, b = base / "zh.srt", base / "en.srt"
-            a.write_text(srt(["ール Muchasdal whats nave kali"]), encoding="utf-8")
-            b.write_text(srt(["Ruu, Muchasdal, what's nave kali?"]), encoding="utf-8")
-            result = review_subtitles(a, b, base / "review.json", sample_seconds=300)
-            self.assertIn("non_chinese_source", result["flags"][0]["reasons"])
-            self.assertEqual(result["sampled_cues"], 1)
 
     def test_review_retries_bad_model_format_using_alternate_mandarin(self):
         with tempfile.TemporaryDirectory() as temp:

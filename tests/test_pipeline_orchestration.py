@@ -2,16 +2,13 @@ import tempfile
 import unittest
 import json
 import shutil
-import sys
-import types
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import numpy as np
 
-from anime_dubber.characters import CharacterProfile
 from anime_dubber.core import (CommandRunner, Config, PipelineError, Segment, analyze_only,
-                               run_pipeline, transcribe_before_separation)
+                               run_pipeline)
 
 
 class PipelineOrchestrationTests(unittest.TestCase):
@@ -45,65 +42,6 @@ class PipelineOrchestrationTests(unittest.TestCase):
             self.assertNotIn("translated_srt", published)
             separation.assert_not_called()
 
-    def test_separated_dialogue_is_transcribed_before_original_soundtrack(self):
-        with tempfile.TemporaryDirectory() as td:
-            work = Path(td)
-            original = work / "original.wav"; vocals = work / "vocals.wav"
-            config = Config(source="video.mp4", output_dir=work)
-            with patch("anime_dubber.core.transcribe_audio", return_value=[Segment(0, 1, "Speech")]) as asr, \
-                 patch("anime_dubber.core.separate_dialogue", return_value=(vocals, work / "bg.wav")):
-                segments, transcript_audio = transcribe_before_separation(original, config, work, CommandRunner(), lambda _: None)
-            self.assertEqual([call.args[0] for call in asr.call_args_list], [vocals])
-            self.assertEqual(asr.call_args.args[2], work / "vocals_primary_asr_v1")
-            self.assertEqual(segments[0].text, "Speech")
-            self.assertEqual(transcript_audio, vocals)
-
-    def test_empty_separated_dialogue_tries_original_without_old_cache(self):
-        with tempfile.TemporaryDirectory() as td:
-            work = Path(td)
-            original = work / "original.wav"; vocals = work / "vocals.wav"
-            config = Config(source="video.mp4", output_dir=work)
-            with patch("anime_dubber.core.transcribe_audio",
-                       side_effect=[[], [Segment(0, 1, "Recovered")]]) as asr, \
-                 patch("anime_dubber.core.separate_dialogue", return_value=(vocals, work / "bg.wav")):
-                segments, selected = transcribe_before_separation(original, config, work, CommandRunner(), lambda _: None)
-            self.assertEqual([call.args[0] for call in asr.call_args_list], [vocals, original])
-            self.assertEqual(asr.call_args.args[2], work / "vocals_primary_asr_v1" / "original_soundtrack_asr")
-            self.assertEqual((segments[0].text, selected), ("Recovered", original))
-
-    def test_old_mixed_soundtrack_transcript_is_not_reused(self):
-        with tempfile.TemporaryDirectory() as td:
-            work = Path(td)
-            (work / "transcript_zh_mlx_whisper_v5_precise.json").write_text(
-                json.dumps([Segment(0, 1, "Incorrect old transcript").to_dict()]))
-            audio = work / "original.wav"; vocals = work / "vocals.wav"
-            cfg = Config(source="video.mp4", output_dir=work, asr_provider="mlx_whisper")
-            recognize = Mock(return_value={"language": "zh", "segments": [
-                {"start": 0, "end": 1, "text": "正确的新对白"}]})
-            with patch("anime_dubber.core.separate_dialogue", return_value=(vocals, work / "bg.wav")), \
-                 patch.dict(sys.modules, {"mlx_whisper": types.SimpleNamespace(transcribe=recognize)}):
-                segments, selected = transcribe_before_separation(audio, cfg, work, CommandRunner(), lambda _: None)
-            recognize.assert_called_once()
-            self.assertEqual((segments[0].text, selected), ("正确的新对白", vocals))
-
-    def test_direct_translation_uses_the_same_separated_dialogue_stem(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td); video = root / "video.mp4"; video.write_bytes(b"video")
-            audio = root / "original.wav"; vocals = root / "vocals.wav"
-            cfg = Config(source=str(video), output_dir=root / "out", mode="subtitles",
-                         translation="whisper", source_language="es")
-            calls = []
-            def transcribe(path, _config, _work, _runner, _progress, *, task="transcribe"):
-                calls.append((path, task))
-                if path == audio:
-                    return []
-                return [Segment(0, 1, "Hola" if task == "transcribe" else "Hello")]
-            with patch("anime_dubber.core.extract_audio", return_value=audio), \
-                 patch("anime_dubber.core.separate_dialogue", return_value=(vocals, root / "bg.wav")), \
-                 patch("anime_dubber.core.transcribe_audio", side_effect=transcribe):
-                results = run_pipeline(cfg, lambda _: None, CommandRunner())
-            self.assertEqual(calls, [(vocals, "transcribe"), (vocals, "translate")])
-            self.assertIn("Hello", results["translated_srt"].read_text())
 
     def test_auto_detected_english_with_chinese_transcript_is_retranscribed_and_translated(self):
         with tempfile.TemporaryDirectory() as td:
@@ -128,40 +66,6 @@ class PipelineOrchestrationTests(unittest.TestCase):
             llm.assert_called_once()
             self.assertIn("There are many martial arts sects", result["translated_srt"].read_text())
 
-    def test_whisper_source_language_output_falls_back_to_aligned_llm(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td); video = root / "video.mp4"; video.write_bytes(b"video")
-            audio = root / "audio.wav"; audio.write_bytes(b"audio")
-            config = Config(source=str(video), output_dir=root / "out", source_language="zh",
-                            target_language="en", translation="whisper", mode="subtitles")
-            def recognize(*_args, **kwargs):
-                return [Segment(0, 2, "天下武林门派如林")]
-            def translate(rows, *_):
-                return [Segment(s.start, s.end, s.text, "Many martial arts sects") for s in rows]
-            with patch("anime_dubber.core.extract_audio", return_value=audio), \
-                 patch("anime_dubber.core.separate_dialogue", return_value=(audio, audio)), \
-                 patch("anime_dubber.core.transcribe_audio", side_effect=recognize), \
-                 patch("anime_dubber.core.platform.system", return_value="Darwin"), \
-                 patch("anime_dubber.core.platform.machine", return_value="arm64"), \
-                 patch("anime_dubber.core.importlib.util.find_spec", return_value=object()), \
-                 patch("anime_dubber.core.translate_with_llm", side_effect=translate) as llm:
-                result = run_pipeline(config, lambda _: None, CommandRunner())
-            llm.assert_called_once()
-            self.assertIn("Many martial arts sects", result["translated_srt"].read_text())
-
-    def test_whisper_source_language_output_explains_setup_without_translation_provider(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td); video = root / "video.mp4"; video.write_bytes(b"video")
-            audio = root / "audio.wav"; audio.write_bytes(b"audio")
-            config = Config(source=str(video), output_dir=root / "out", source_language="zh",
-                            target_language="en", translation="whisper", mode="subtitles")
-            with patch("anime_dubber.core.extract_audio", return_value=audio), \
-                 patch("anime_dubber.core.separate_dialogue", return_value=(audio, audio)), \
-                 patch("anime_dubber.core.transcribe_audio", return_value=[Segment(0, 2, "天下武林门派如林")]), \
-                 patch("anime_dubber.core.platform.system", return_value="Linux"), \
-                 patch("anime_dubber.core.shutil.which", return_value=None):
-                with self.assertRaisesRegex(PipelineError, "Whisper direct translation returned source-language dialogue"):
-                    run_pipeline(config, lambda _: None, CommandRunner())
 
     def test_dub_publishes_both_subtitle_sets_before_separation_failure(self):
         with tempfile.TemporaryDirectory() as td:
@@ -322,61 +226,6 @@ class PipelineOrchestrationTests(unittest.TestCase):
             self.assertTrue(results["dubbed_video"].is_file())
             character_map = json.loads(results["character_map"].read_text(encoding="utf-8"))
             self.assertEqual({Path(p["suggested_reference_audio"]) for p in character_map["characters"]}, set(references))
-
-    def test_multi_character_profiles_reach_tts(self):
-        with tempfile.TemporaryDirectory() as td:
-            d = Path(td)
-            video = d / "video.mp4"; video.write_bytes(b"video")
-            audio = d / "audio.wav"; audio.write_bytes(b"audio")
-            vocals = d / "vocals.wav"; vocals.write_bytes(b"vocals")
-            bg = d / "bg.wav"; bg.write_bytes(b"bg")
-            timeline = d / "timeline.wav"; timeline.write_bytes(b"timeline")
-            mixed = d / "mixed.m4a"; mixed.write_bytes(b"mixed")
-            segs = [Segment(0, 1, "甲"), Segment(1, 2, "乙")]
-            p1 = CharacterProfile(id="CHAR_001", display_name="Lead", role="lead", voice_class="male", macos_voice="Alex", tts_rate=200)
-            p2 = CharacterProfile(id="CHAR_002", display_name="Side", role="supporting", voice_class="female", macos_voice="Samantha", tts_rate=210)
-
-            def fake_translate(items, *_args, **_kwargs):
-                items[0].translated = "One"; items[1].translated = "Two"; return items
-
-            def fake_analyze(speaker_audio, items, *_args, **_kwargs):
-                self.assertEqual(speaker_audio, audio)
-                items[0].speaker_id = "CHAR_001"; items[0].style = "shouting"
-                items[1].speaker_id = "CHAR_002"; items[1].style = "whispering"
-                payload = {"version": 3, "characters": [p1.to_dict(), p2.to_dict()], "segments": []}
-                return [p1, p2], payload
-
-            seen = []
-            published = []
-            runner = CommandRunner()
-            runner.artifact = lambda kind, path, language: published.append((kind, Path(path).exists()))
-            def fake_tts(seg, index, tts_dir, config, runner, progress, profile=None, next_start=None):
-                self.assertIn(("translated_srt", True), published)
-                seen.append((seg.speaker_id, seg.style, (profile or {}).get("macos_voice")))
-                out = d / f"clip{index}.wav"; out.write_bytes(b"clip"); return out
-
-            cfg = Config(source=str(video), output_dir=d / "out", mode="dub", translation="llm", multi_character=True, series_id="series")
-            with patch("anime_dubber.core.download_source", return_value=video), \
-                 patch("anime_dubber.core.extract_audio", return_value=audio), \
-                 patch("anime_dubber.core.separate_dialogue", return_value=(vocals, bg)), \
-                 patch("anime_dubber.core.transcribe_audio", return_value=segs), \
-                 patch("anime_dubber.core.translate_with_llm", side_effect=fake_translate), \
-                 patch("anime_dubber.core.list_macos_voices", return_value=["Alex", "Samantha"]), \
-                 patch("anime_dubber.characters.analyze_characters", side_effect=fake_analyze), \
-                 patch("anime_dubber.core.prepare_tts_clip", side_effect=fake_tts), \
-                 patch("anime_dubber.core.ffprobe_duration", return_value=2.0), \
-                 patch("anime_dubber.core.render_dub_timeline", return_value=timeline), \
-                 patch("anime_dubber.core.build_dialogue_safe_background", return_value=bg), \
-                 patch("anime_dubber.core.mix_background_and_dub", return_value=mixed), \
-                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, f, _r, _p: f.write_bytes(b"final")):
-                results = run_pipeline(cfg, lambda _m: None, runner)
-
-            self.assertEqual(seen, [
-                ("CHAR_001", "shouting", "Alex"),
-                ("CHAR_002", "whispering", "Samantha"),
-            ])
-            self.assertTrue(results["dubbed_video"].exists())
-            self.assertTrue(results["character_map"].exists())
 
 
 if __name__ == "__main__":

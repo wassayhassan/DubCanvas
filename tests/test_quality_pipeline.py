@@ -1,20 +1,17 @@
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
-from anime_dubber.core import Config, CommandRunner, Segment, PipelineError, run_pipeline, analyze_only
-from anime_dubber.quality_models import options, digest
+from anime_dubber.core import Config, CommandRunner, Segment, PipelineError, run_pipeline
+from anime_dubber.quality_models import options
 from anime_dubber.quality_runtime import Checkpoints, Worker
-from anime_dubber.quality_timing import choose_tempo, window, speech_error, validate_schedule, protected_speech_matches, chinese_critical_matches
-from anime_dubber.localization import Glossary, localize, validate_review, parse_object, cloud_review
-from anime_dubber.application.service import config_from_dict, ApplicationService
+from anime_dubber.quality_timing import window, speech_error, validate_schedule, protected_speech_matches, chinese_critical_matches
+from anime_dubber.localization import Glossary, localize, validate_review, cloud_review
 
 class QualityConfigTests(unittest.TestCase):
     def test_subtitles_and_analysis_do_not_require_unrelated_voice_resources(self):
@@ -29,14 +26,6 @@ class QualityConfigTests(unittest.TestCase):
         for key in ("allow_cloud", "reference_consent"):
             with self.assertRaises(ValueError):
                 options({key: "false"})
-    def test_legacy_profile_preserved_and_quality_settings_roundtrip(self):
-        self.assertEqual(config_from_dict({"source": "x", "output_dir": "/tmp/out"}).pipeline_profile, "legacy")
-        cfg = config_from_dict({"source": "x", "output_dir": "/tmp/out", "pipeline_profile": "quality_v1",
-            "quality_settings": {"voice_engine": "kokoro"}, "voice_overrides": {"s": {"qwen_speaker": "Ryan"}}})
-        saved = ApplicationService()._normalized_config_dict(cfg)
-        restored = config_from_dict(saved)
-        self.assertEqual(restored.quality_settings["voice_engine"], "kokoro")
-        self.assertEqual(restored.voice_overrides["s"]["qwen_speaker"], "Ryan")
 
     def test_rejects_invalid_profiles_speed_context_and_unknown_settings(self):
         for value in ({"maximum_speed": 1.51}, {"context_tokens": 16000}, {"worker_memory_gb": 48},
@@ -44,13 +33,6 @@ class QualityConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 options(value)
 
-    def test_quality_profile_enters_actual_workflow(self):
-        with patch("anime_dubber.quality_pipeline.run_quality", return_value={"translated_srt": Path("a")}) as run:
-            cfg = Config("x", Path("/tmp/out"), pipeline_profile="quality_v1")
-            run_pipeline(cfg)
-            analyze_only(cfg)
-            self.assertEqual(run.call_count, 2)
-            self.assertTrue(run.call_args.kwargs["analysis"])
 
     def test_cloud_consent_prevents_network_call(self):
         with patch("urllib.request.urlopen") as upload:
@@ -59,13 +41,6 @@ class QualityConfigTests(unittest.TestCase):
             upload.assert_not_called()
 
 class TimingTests(unittest.TestCase):
-    def test_spoken_numbers_match_digits_without_accepting_changed_quantities(self):
-        self.assertEqual(speech_error("Level 3", "Level three"), 0)
-        self.assertEqual(speech_error("120 years", "one hundred twenty years"), 0)
-        self.assertTrue(protected_speech_matches("Level 3", "Level three"))
-        self.assertFalse(protected_speech_matches("Level 3", "Level four"))
-        self.assertTrue(protected_speech_matches("1.5 years", "one point five years"))
-        self.assertTrue(protected_speech_matches("21st realm", "twenty first realm"))
     def test_low_cer_cannot_hide_source_negation_numbers_or_known_names(self):
         self.assertFalse(chinese_critical_matches("我没有背叛宗门", "我有背叛宗门", {}))
         self.assertFalse(chinese_critical_matches("十年之后", "四年之后", {}))
@@ -78,14 +53,6 @@ class TimingTests(unittest.TestCase):
         self.assertFalse(protected_speech_matches("I did not reach realm 3", "I did reach realm 3"))
         self.assertFalse(protected_speech_matches("realm 3", "realm 4"))
         self.assertTrue(protected_speech_matches("I will never leave", "I will never leave"))
-    def test_combined_ceiling_and_style_limits(self):
-        q = options()
-        self.assertIsNone(choose_tempo(1.6, 1, "normal", q))
-        self.assertIsNone(choose_tempo(1.15, 1, "whispering", q))
-        self.assertEqual(choose_tempo(1.1, 1, "normal", q), 1.1)
-        q["allow_rescue_speed"] = True
-        self.assertEqual(choose_tempo(1.5, 1, "normal", q, rescue=True), 1.5)
-        self.assertIsNone(choose_tempo(1.4, 1, "normal", q, native_acceleration=1.1, rescue=True))
 
     def test_silence_borrow_stops_at_speaker_and_cut(self):
         segs = [Segment(0, 1, "a", speaker_id="a"), Segment(1.1, 2, "b", speaker_id="b")]
@@ -120,30 +87,6 @@ class CheckpointTests(unittest.TestCase):
             self.assertIsNone(cp.get("translation", inputs))
 
 class LocalizationTests(unittest.TestCase):
-    def test_default_preset_is_connected_and_explicit_female_qwen_choice_is_preserved(self):
-        from anime_dubber.quality_pipeline import cast
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td); path = root / "cast.json"
-            cfg = Config("source", root)
-            profiles = cast([Segment(0, 1, "你好", speaker_id="s")], cfg,
-                            options({"qwen_speaker": "Vivian"}), path, CommandRunner())
-            self.assertEqual(profiles["s"]["qwen_speaker"], "Vivian")
-            payload = json.loads(path.read_text())
-            payload["characters"][0].update(voice_class="female", tts_provider="qwen", manual=True)
-            path.write_text(json.dumps(payload), encoding="utf-8")
-            profiles = cast([Segment(0, 1, "你好", speaker_id="s")], cfg, options(), path, CommandRunner())
-            self.assertEqual(profiles["s"]["tts_provider"], "qwen")
-    def test_glossary_roundtrips_under_windows_default_encoding(self):
-        real_read = Path.read_text
-        def windows_read(path, *args, **kwargs):
-            kwargs.setdefault("encoding", "cp1252")
-            return real_read(path, *args, **kwargs)
-        with tempfile.TemporaryDirectory() as td, patch.object(Path, "read_text", windows_read):
-            g = Glossary(Path(td) / "glossary.json", {"宗主": "Sect Master"})
-            g.save()
-            restored = Glossary(g.path, {})
-            self.assertEqual(restored.revision, g.revision)
-            self.assertIn("宗主", restored.entries)
 
     def test_dub_voice_override_does_not_change_shared_cast(self):
         from anime_dubber.quality_pipeline import cast

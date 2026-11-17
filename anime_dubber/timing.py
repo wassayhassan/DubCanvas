@@ -6,6 +6,7 @@ import json
 import math
 import re
 from .languages import source_name, target_name
+from .prompts import render_prompt
 
 
 def _anchors(text: str) -> list[str]:
@@ -79,13 +80,7 @@ class TimingRewriter:
                 self._model, self._tokenizer = load(name)
                 self._name = name
             tokenizer = self._tokenizer
-            if getattr(tokenizer, "chat_template", None) is not None:
-                try:
-                    prompt = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
-                                                           add_generation_prompt=True, enable_thinking=False)
-                except TypeError:
-                    prompt = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
-                                                           add_generation_prompt=True)
+            prompt = render_prompt(tokenizer, prompt)
             raw = _response_text(generate(self._model, tokenizer, prompt=prompt,
                                           max_tokens=180, verbose=False))
         candidate = parse_translation_response(raw, [1]).get(1, "").strip()

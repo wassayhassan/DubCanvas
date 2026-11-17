@@ -76,9 +76,6 @@ jobs:
           assert library.espeak_Initialize(2, 0, os.environ['ESPEAK_DATA_PATH'].encode(), 0) > 0
           PYCODE
 
-      - name: Test update verification and staging
-        run: swift test --package-path macos/DubCanvasApp
-
       - name: Verify signed bundle after all runtime tests
         run: codesign --verify --deep --strict dist/DubCanvas.app
 

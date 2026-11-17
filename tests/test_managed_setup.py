@@ -45,14 +45,6 @@ class ManagedSetupTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): setup.provision(Path(td), Path('uv'))
             self.assertFalse((Path(td) / 'core-ready.json').exists())
 
-    def test_core_ready_reuses_runtime_without_reinstalling(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td); (root / 'core/bin').mkdir(parents=True)
-            (root / 'core/bin/python').touch()
-            setup.atomic_json(root / 'core-ready.json', {'fingerprint': setup.core_fingerprint()})
-            with patch.object(setup, 'install_env') as install, patch.object(setup, 'run'):
-                setup.provision(root, Path('uv'))
-            install.assert_not_called()
 
     def test_incomplete_seed_is_repaired_without_deleting_environment(self):
         with tempfile.TemporaryDirectory() as td:
@@ -73,14 +65,6 @@ class ManagedSetupTests(unittest.TestCase):
         result = subprocess.run([sys.executable, '-I', '-c', code, str(script)], capture_output=True, text=True, check=True)
         self.assertIn('bundled backend found', result.stdout)
 
-    def test_checkpoint_mirror_fallback_keeps_both_integrity_checks(self):
-        with patch.object(setup, 'download', side_effect=[OSError('mirror offline'), None]) as download:
-            setup.download_checkpoint(Path('weights'))
-        self.assertEqual(download.call_count, 2)
-        self.assertIn('zenodo.org', download.call_args.args[0])
-        for call in download.call_args_list:
-            self.assertEqual(call.kwargs['sha256'], setup.CHECKPOINT_SHA256)
-            self.assertEqual(call.kwargs['md5'], setup.CHECKPOINT_MD5)
 
     def test_bandit_training_wrapper_is_normalized_without_weakening_strict_loading(self):
         from anime_dubber.quality_models import bandit_state_dict

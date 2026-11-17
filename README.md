@@ -1,19 +1,36 @@
 # DubCanvas
 
-DubCanvas creates subtitles and multilingual dubs for videos. The macOS app organizes work into projects: each project holds one source video, shared speaker and subtitle analysis, and any number of dub versions. You can make another language or voice version without starting a separate project.
+Create subtitles and multilingual video dubs on your Mac. Each project contains one source video and multiple dub versions, so you can try another language or voice without repeating source analysis.
 
-## Get started on macOS
+## Install
 
-Requires an Apple Silicon Mac running macOS 14 or later.
+**Requires Apple Silicon and macOS 14 or later.**
 
-1. Download the newest ZIP from [DubCanvas automatic updates](https://github.com/wassayhassan/DubCanvas/releases/tag/app-updates).
-2. Unzip it and move **DubCanvas.app** into **Applications**.
-3. Open DubCanvas and choose **Download and Set Up**. The app installs its own Python runtime, audio tools, dependencies and settings without Terminal, Homebrew or Xcode on your Mac.
-4. On Macs with at least 48 GB memory, the setup screen offers the experimental Chinese → English Quality Pipeline. Accept the speaker model access conditions and enter your Hugging Face read token once. The app manages the isolated runtimes, pinned model downloads and configuration automatically. Model downloads are large; keep internet connected and allow storage for video work. Setup progress and logs are available in the app. Retry reuses completed environments and cached model downloads.
+1. Download the latest ZIP from [Releases](https://github.com/wassayhassan/DubCanvas/releases/tag/app-updates).
+2. Unzip it, move **DubCanvas.app** to **Applications**, and open it.
+3. Choose **Download and Set Up**. The app installs its runtime and tools; Terminal, Homebrew, and Xcode are not required.
 
-Standard processing works on smaller Apple Silicon Macs. The quality model stack remains experimental and requires a first-video test on your hardware. Optional reference cloning and cloud providers require their own credentials/configuration.
+Keep an internet connection during setup and initial model downloads. Models can be large. Use **Check for Updates** in the app to install newer builds.
 
-For source builds and development:
+## Make a dub
+
+1. Choose **New Project**, name it, and add a video file or video URL.
+2. Select a target language and start a dub, or create a subtitles-only project.
+3. Follow progress in the project, then preview and export the result.
+4. Choose **New Dub** within the project to try another language or voice.
+
+- **Voices:** English dubs default to Kokoro preset voices. Voice cloning is optional through Chatterbox and source voice references in Advanced. Other languages require a compatible engine, such as Chatterbox Multilingual or ElevenLabs; cloud providers require credentials.
+- **Outputs:** SRT/VTT subtitles and dubbed video. Review names, translations, and timing before publishing.
+- **Resume:** Keep the project's work folder to reuse analysis and completed stages.
+- **Troubleshooting:** Open **Activity & Logs** to copy or save stage logs. Session and update logs are in `~/Library/Logs/DubCanvas`.
+
+### Experimental quality pipeline
+
+Macs with at least 48 GB memory can opt into the Chinese → English quality pipeline during setup or in **Settings → Quality Pipeline**. It uses additional models and isolated runtimes, and requires a Hugging Face read token and acceptance of speaker-model access conditions. Real-model performance and listening quality on M5 Max have not been benchmarked.
+
+See [quality pipeline setup and limitations](docs/quality-pipeline.md) before enabling it.
+
+## Run from source
 
 ```bash
 git clone https://github.com/wassayhassan/DubCanvas.git
@@ -21,49 +38,30 @@ cd DubCanvas
 zsh setup.sh
 ```
 
-1. Choose **New Project** and add a local video or video page URL.
-2. Choose a target language and start the first dub, or create the project with subtitles only.
-3. Open the project to track progress and download subtitles as soon as they are ready.
-4. Open a completed dub to preview and export it. Use **New Dub** inside that project for another language, voice, or model. Use **Compare Versions** to review two completed dubs.
+Optional local voice engines: `zsh macos/install_voice_engines.sh`.
 
-New dubs use Kokoro preset voices by default, without voice cloning. Choose Chatterbox and enable source voice references in Advanced to opt in to cloning. Automatic settings choose available local models. The first run may download model weights. For the best local voices, install the optional voice engines:
+### Command line
 
-```bash
-zsh macos/install_voice_engines.sh
-```
-
-Chatterbox and Kokoro provide local voices; ElevenLabs is optional and requires an API key in Settings. Non-English dubbing needs a multilingual voice engine such as Chatterbox Multilingual or ElevenLabs. If no suitable voice engine is available, subtitles can still be generated.
-
-Use **Check for Updates** in the top bar to check for a newer build. **Update and Restart** asks for your approval, verifies the download, preserves projects and model caches, and prepares the installed Python environment before replacing the app. Finish or pause all jobs first. Existing installations need one rebuild to get the updater.
-
-For a failed job, open **Activity & Logs** and choose **Copy Stage**, **Copy All Logs**, or **Save Logs**. Every job automatically saves a readable `.log` and structured `.jsonl` under the output folder's `.anime_dubber_project/logs/jobs`. Session and update logs are in `~/Library/Logs/DubCanvas`. The report includes model settings, stage timings, recognition summaries, command output, and exception tracebacks; API keys are redacted.
-
-## Command line
-
-The Python CLI also runs on macOS, Windows, and Linux. Install FFmpeg and ffprobe first. On Linux, run `bash setup-cross-platform.sh`; on Windows, run `.\setup-cross-platform.ps1` in PowerShell.
+The CLI supports macOS, Linux, and Windows. On Linux or Windows, install FFmpeg/ffprobe, then run `bash setup-cross-platform.sh` or `.\setup-cross-platform.ps1`. Activate the installed environment before running:
 
 ```bash
 python -m dubcanvas doctor
-python -m dubcanvas new-project /path/to/video.mp4 -o ./output --name "My video"
 python -m dubcanvas run /path/to/video.mp4 -o ./output --target-language en
-python -m dubcanvas projects -o ./output
+python -m dubcanvas --help
 ```
 
-Run `python -m dubcanvas --help` for more commands and options. The old `python -m anime_dubber.cli` entry point still works with existing scripts.
-If an existing `AnimeDubberOutput` folder is present, the CLI continues using it by default. Pass `-o` to choose another folder.
+The legacy `python -m anime_dubber.cli` command still works. Existing `AnimeDubberOutput` folders remain supported; use `-o` to select a different output folder.
 
-## Notes
+### Development checks
 
-- Supported target languages in the macOS app include English, Spanish, French, German, Japanese, Korean, Chinese, Portuguese, Italian, Hindi, and Arabic. Voice availability depends on installed models and providers.
-- Subtitles are saved as SRT/VTT files; finished dub versions include an exported video and review details.
-- DubCanvas checks a clearly visible single face for speech onset and makes small automatic audio timing corrections when confident. It keeps source timing for animated faces it cannot track, off-screen speakers, and ambiguous shots; it does not redraw mouths.
-- Results are generated automatically, so check names, translations, and timing before publishing.
-- Keep the project's work folder if you want to pause or resume a dub.
+```bash
+python -m pip install -c constraints.txt numpy soundfile opencv-python-headless psutil==7.2.2
+python verify_source.py
+python -m unittest discover -s tests
+```
 
-For architecture and detailed design, see [the project workspace notes](docs/PROJECT_WORKSPACE_VNEXT.md) and [the SwiftUI design specification](docs/SWIFTUI_REDESIGN_SPEC.md).
-# Experimental quality dubbing pipeline
+The Python suite focuses on end-to-end media processing, project data and recovery, timing, setup, and update safety. Small helper and configuration checks are intentionally limited to keep maintenance manageable.
 
-Chinese-to-English quality processing is available through **Settings → Quality Pipeline** or CLI `--pipeline-profile quality_v1 --quality-settings quality-settings.json`. It adds independent ASR/meaning checks, expressive fixed-preset voices, isolated model workers, and collision-blocking timing. Existing providers and projects remain available.
+Install FFmpeg/ffprobe and Rubber Band to exercise media integration tests. On macOS, run `swift test --package-path macos/DubCanvasApp` for the native app. Tests use model substitutes; passing them does not establish real-model dubbing quality.
 
-Read [setup, behavior and validation limits](docs/quality-pipeline.md) and [the complete requirement checklist](docs/quality-pipeline-checklist.md) before enabling it. Real-model M5 Max performance and bilingual/listening quality have not been benchmarked; the experimental stack is not silently promoted to default.
-
+More detail: [project architecture](docs/PROJECT_WORKSPACE_VNEXT.md) · [macOS interface design](docs/SWIFTUI_REDESIGN_SPEC.md).

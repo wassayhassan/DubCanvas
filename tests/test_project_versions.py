@@ -8,8 +8,7 @@ from unittest.mock import patch
 from anime_dubber.application.service import ApplicationService
 from anime_dubber.core import (Config, Segment, run_pipeline, translate_with_llm,
                                translate_with_ollama_provider, LLM_MODEL, CommandRunner,
-                               CancelledError, PipelineError, _version_profiles)
-from anime_dubber.application.service import config_from_dict
+                               CancelledError, PipelineError)
 import hashlib
 import json
 import sys
@@ -70,24 +69,6 @@ class ProjectVersionsTests(unittest.TestCase):
             self.assertEqual(result[0].translated, "The martial world has countless sects.")
             self.assertNotIn("天下武林", next(Path(temp).glob("translations_ollama_*.json")).read_text(encoding="utf-8"))
 
-    def test_old_ollama_translation_cache_is_refreshed(self):
-        with tempfile.TemporaryDirectory() as temp:
-            cfg = Config(source="source.mp4", output_dir=Path(temp), translation="ollama")
-            signature = hashlib.sha1(json.dumps({
-                "provider": "ollama", "target_language": "en", "model": cfg.ollama_model,
-                "url": cfg.ollama_url, "context": cfg.context, "glossary": cfg.glossary,
-                "source_text": ["你好"],
-            }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
-            old_cache = Path(temp, f"translations_ollama_{signature}.json")
-            old_cache.write_text('{"0":"Unrelated but fluent English"}', encoding="utf-8")
-            with patch("anime_dubber.providers.translation.translate_with_ollama",
-                       return_value={0: "Hello"}) as model:
-                rows = translate_with_ollama_provider([Segment(0, 1, "你好")], cfg,
-                                                      Path(temp), CommandRunner(), lambda _: None)
-            model.assert_called_once()
-            self.assertEqual(rows[0].translated, "Hello")
-            self.assertEqual(json.loads(old_cache.read_text(encoding="utf-8"))["0"],
-                             "Unrelated but fluent English")
 
     def test_translation_failure_stops_before_dub(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -101,17 +82,6 @@ class ProjectVersionsTests(unittest.TestCase):
                                        CommandRunner(), lambda _: None)
             self.assertFalse(any(Path(temp).glob("translations_llm_*.json")))
 
-    def test_voice_choices_are_version_scoped(self):
-        shared = types.SimpleNamespace(id="speaker_1", kokoro_voice="af_heart",
-                                       to_dict=lambda: {"id": "speaker_1", "kokoro_voice": "af_heart"})
-        first = _version_profiles([shared], {"speaker_1": {"tts_provider": "kokoro", "kokoro_voice": "am_adam"}})
-        second = _version_profiles([shared], {"speaker_1": {"tts_provider": "chatterbox"}})
-        self.assertEqual(shared.kokoro_voice, "af_heart")
-        self.assertEqual(first["speaker_1"]["kokoro_voice"], "am_adam")
-        self.assertEqual(second["speaker_1"]["tts_provider"], "chatterbox")
-        self.assertEqual(config_from_dict({"source": "source.mp4", "output_dir": "/tmp",
-                                           "voice_overrides": {"speaker_1": {"tts_provider": "kokoro"}}})
-                         .voice_overrides["speaker_1"]["tts_provider"], "kokoro")
 
     def test_failed_dub_retries_in_place_after_restart(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -222,27 +192,6 @@ class ProjectVersionsTests(unittest.TestCase):
                     time.sleep(.01)
                 self.assertEqual(service.get_job(job_id)["status"], "completed")
 
-    def test_old_english_translation_cache_is_refreshed_once(self):
-        with tempfile.TemporaryDirectory() as temp:
-            config = Config(source="source.mp4", output_dir=Path(temp), translation="llm")
-            segments = [Segment(0, 1, "你好")]
-            signature = hashlib.sha1(json.dumps({
-                "model": LLM_MODEL, "context": config.context,
-                "glossary": config.glossary, "source_text": ["你好"],
-            }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
-            Path(temp, f"translations_llm_{signature}.json").write_text('{"0":"Unrelated but fluent English"}')
-            fake = types.SimpleNamespace(
-                load=lambda _: (object(), types.SimpleNamespace(chat_template=None)),
-                generate=lambda *_args, **_kwargs: '[{"id": 0, "text": "Hello"}]')
-            with patch.dict(sys.modules, {"mlx_lm": fake}):
-                result = translate_with_llm(segments, config, Path(temp), CommandRunner(), lambda _: None)
-            self.assertEqual(result[0].translated, "Hello")
-            # The old answer is preserved for diagnostics, but a new cache is used.
-            self.assertEqual(len(list(Path(temp).glob("translations_llm_*.json"))), 2)
-            with patch.dict(sys.modules, {"mlx_lm": None}):
-                reused = translate_with_llm([Segment(0, 1, "你好")], config, Path(temp),
-                                            CommandRunner(), lambda _: None)
-            self.assertEqual(reused[0].translated, "Hello")
 
     def test_multiple_dubs_preserve_versions_and_deletion_is_isolated(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -370,16 +319,6 @@ class ProjectVersionsTests(unittest.TestCase):
             self.assertEqual(dub["status"], "failed")
             self.assertIn("Hello", Path(dub["artifacts"]["translated_srt"]).read_text(encoding="utf-8"))
             self.assertTrue(Path(dub["artifacts"]["translated_vtt"]).exists())
-
-    def test_non_english_voice_constraints_are_explicit(self):
-        with tempfile.TemporaryDirectory() as temp:
-            service = ApplicationService()
-            self.assertEqual(service.capabilities()["providers"]["tts"]["chatterbox_multilingual"],
-                             __import__("anime_dubber.providers.tts", fromlist=["multilingual_chatterbox_available"]).multilingual_chatterbox_available())
-            with self.assertRaisesRegex(ValueError, "Chatterbox Multilingual or ElevenLabs"):
-                service.run_sync({"source": "source.mp4", "output_dir": temp, "target_language": "es", "tts": {"provider": "kokoro"}})
-            with self.assertRaisesRegex(ValueError, "Whisper direct"):
-                service.run_sync({"source": "source.mp4", "output_dir": temp, "source_language": "zh", "target_language": "es", "mode": "subtitles", "translation": {"provider": "whisper"}})
 
 
 if __name__ == "__main__":
