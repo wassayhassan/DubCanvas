@@ -24,7 +24,7 @@ class ProjectVersionsTests(unittest.TestCase):
             fake = types.SimpleNamespace(
                 load=lambda _: (object(), types.SimpleNamespace(chat_template=None)),
                 generate=lambda *_args, **_kwargs: next(answers))
-            with patch.dict(sys.modules, {"mlx_lm": fake}):
+            with patch.dict(sys.modules, {"mlx_lm": fake, "mlx_lm.sample_utils": types.SimpleNamespace(make_sampler=lambda **kw: kw)}):
                 rows = translate_with_llm([Segment(0, 1, "你好"), Segment(1, 2, "世界")],
                                           cfg, Path(temp), CommandRunner(), lambda _: None)
             self.assertEqual([row.translated for row in rows], ["Hello", "World"])
@@ -32,7 +32,7 @@ class ProjectVersionsTests(unittest.TestCase):
     def test_ollama_cancel_remains_a_cancelled_job(self):
         with tempfile.TemporaryDirectory() as temp:
             cfg = Config(source="source.mp4", output_dir=Path(temp), translation="ollama")
-            with patch("anime_dubber.providers.translation.translate_with_ollama",
+            with patch("anime_dubber.providers.translation.ollama_generate",
                        side_effect=CancelledError("paused")):
                 with self.assertRaises(CancelledError):
                     translate_with_ollama_provider([Segment(0, 1, "你好")], cfg,
@@ -51,11 +51,11 @@ class ProjectVersionsTests(unittest.TestCase):
             fake = types.SimpleNamespace(
                 load=lambda _: (object(), types.SimpleNamespace(chat_template=None)),
                 generate=lambda *_args, **_kwargs: next(responses))
-            with patch.dict(sys.modules, {"mlx_lm": fake}):
+            with patch.dict(sys.modules, {"mlx_lm": fake, "mlx_lm.sample_utils": types.SimpleNamespace(make_sampler=lambda **kw: kw)}):
                 result = translate_with_llm([Segment(0, 2, "天下武林,门派如林")], cfg,
                                             Path(temp), CommandRunner(), lambda _: None)
             self.assertEqual(result[0].translated, "The martial world has countless sects.")
-            self.assertEqual(json.loads(cache.read_text(encoding="utf-8"))["0"], result[0].translated)
+            self.assertEqual(list(json.loads(next(Path(temp).glob("translation_lines_llm_*.json")).read_text()).values()), [result[0].translated])
 
     def test_ollama_never_caches_untranslated_fallback(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -63,11 +63,11 @@ class ProjectVersionsTests(unittest.TestCase):
             with patch("anime_dubber.providers.translation.translate_with_ollama",
                        return_value={0: "天下武林,门派如林"}), \
                  patch("anime_dubber.providers.translation.ollama_generate",
-                       return_value="The martial world has countless sects."):
+                       return_value='[ {"id": 0, "text": "The martial world has countless sects."} ]'):
                 result = translate_with_ollama_provider([Segment(0, 2, "天下武林,门派如林")],
                                                         cfg, Path(temp), CommandRunner(), lambda _: None)
             self.assertEqual(result[0].translated, "The martial world has countless sects.")
-            self.assertNotIn("天下武林", next(Path(temp).glob("translations_ollama_*.json")).read_text(encoding="utf-8"))
+            self.assertNotIn("天下武林", next(Path(temp).glob("translation_lines_ollama_*.json")).read_text(encoding="utf-8"))
 
 
     def test_translation_failure_stops_before_dub(self):
@@ -76,8 +76,8 @@ class ProjectVersionsTests(unittest.TestCase):
             fake = types.SimpleNamespace(
                 load=lambda _: (object(), types.SimpleNamespace(chat_template=None)),
                 generate=lambda *_args, **_kwargs: '[{"id": 0, "text": "唐门"}]')
-            with patch.dict(sys.modules, {"mlx_lm": fake}):
-                with self.assertRaisesRegex(PipelineError, "Translation failed for line 1"):
+            with patch.dict(sys.modules, {"mlx_lm": fake, "mlx_lm.sample_utils": types.SimpleNamespace(make_sampler=lambda **kw: kw)}):
+                with self.assertRaisesRegex(PipelineError, r"Translation failed for lines \[1\]"):
                     translate_with_llm([Segment(0, 1, "唐门")], cfg, Path(temp),
                                        CommandRunner(), lambda _: None)
             self.assertFalse(any(Path(temp).glob("translations_llm_*.json")))
@@ -262,7 +262,7 @@ class ProjectVersionsTests(unittest.TestCase):
             video = output / "source.mp4"; video.write_bytes(b"video")
             audio = output / "audio.wav"; audio.write_bytes(b"audio")
             events = []
-            class Runner:
+            class Runner(CommandRunner):
                 def check_cancel(self): pass
                 def artifact(self, kind, path, language):
                     events.append((kind, Path(path).exists(), language))
@@ -310,8 +310,9 @@ class ProjectVersionsTests(unittest.TestCase):
                  patch("anime_dubber.core.separate_dialogue", return_value=(audio, audio)), \
                  patch("anime_dubber.core.transcribe_audio", return_value=[Segment(0, 1, "你好")]), \
                  patch("anime_dubber.core.translate_with_llm", side_effect=translation), \
+                 patch("anime_dubber.core.ffprobe_duration", side_effect=RuntimeError("later audio failure")), \
                  patch.dict(sys.modules, {"anime_dubber.characters": character_module}):
-                with self.assertRaisesRegex(RuntimeError, "speaker model failed"):
+                with self.assertRaisesRegex(RuntimeError, "later audio failure"):
                     service.run_sync({"source": str(video), "output_dir": temp,
                                       "translation": "llm", "tts_engine": "chatterbox"})
 

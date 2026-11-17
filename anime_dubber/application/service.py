@@ -138,6 +138,13 @@ def config_from_dict(payload: Dict[str, Any]) -> Config:
         faster_whisper_device=str(asr.get("device", data.get("faster_whisper_device", "auto")) or "auto"),
         faster_whisper_compute_type=str(asr.get("compute_type", data.get("faster_whisper_compute_type", "auto")) or "auto"),
         translation=translation_provider,
+        cloud_translation_url=str(translation.get("endpoint", data.get("cloud_translation_url", ""))),
+        cloud_translation_model=str(translation.get("cloud_model", data.get("cloud_translation_model", ""))),
+        cloud_translation_api_key=str(translation.get("api_key", data.get("cloud_translation_api_key", ""))),
+        cloud_translation_consent=translation.get("consent", data.get("cloud_translation_consent", False)) is True,
+        asr_prompt=str(asr.get("prompt", data.get("asr_prompt", ""))),
+        asr_chunk_seconds=max(10, min(120, int(data.get("asr_chunk_seconds", 30)))),
+        timing_failure=str(data.get("timing_failure", "needs_review")),
         llm_model=str(translation.get("llm_model", data.get("llm_model", "mlx-community/Qwen3-8B-4bit")) or "mlx-community/Qwen3-8B-4bit"),
         ollama_url=str(translation.get("ollama_url", data.get("ollama_url", "http://127.0.0.1:11434")) or "http://127.0.0.1:11434"),
         ollama_model=str(translation.get("model", data.get("ollama_model", "qwen3:4b")) or "qwen3:4b"),
@@ -171,7 +178,7 @@ def config_from_dict(payload: Dict[str, Any]) -> Config:
         demucs_device=str(data.get("demucs_device") or "auto"),
         chunk_seconds=int(data.get("chunk_seconds", 120)),
         background_volume=float(audio.get("background_volume", data.get("background_volume", 1.0))),
-        dub_volume=float(audio.get("dub_volume", data.get("dub_volume", 1.15))),
+        dub_volume=float(audio.get("dub_volume", data.get("dub_volume", 1.0))),
         ducking=bool(audio.get("ducking", data.get("ducking", False))),
         elevenlabs_api_key=str(tts.get("api_key", data.get("elevenlabs_api_key", "")) or ""),
         elevenlabs_voice_id=str(tts.get("voice_id", data.get("elevenlabs_voice_id", "JBFqnCBsd6RMkjVDRZzb")) or ""),
@@ -183,7 +190,7 @@ def config_from_dict(payload: Dict[str, Any]) -> Config:
         series_id=str(data.get("series_id") or ""),
         speaker_backend=str(speaker.get("backend", data.get("speaker_backend", "auto")) or "auto"),
         review_before_dub=bool(data.get("review_before_dub", True)),
-        review_model=str(data.get("review_model") or "mlx-community/Qwen3-8B-4bit"),
+        review_model=str(data.get("review_model") or "mlx-community/Qwen3-14B-4bit"),
     )
 
 
@@ -344,8 +351,9 @@ class ApplicationService:
 
     def _normalized_config_dict(self, config: Config) -> dict:
         data = _json_safe(asdict(config))
-        if data.get("elevenlabs_api_key"):
-            data["elevenlabs_api_key"] = "<redacted>"
+        for key in ("elevenlabs_api_key", "cloud_translation_api_key"):
+            if data.get(key):
+                data[key] = "<redacted>"
         return data
 
     def validate_job_setup(self, config: Config, *, analysis: bool = False) -> None:
@@ -360,6 +368,11 @@ class ApplicationService:
             if not is_url(config.source):
                 validate_media_streams(Path(config.source).expanduser(), CommandRunner())
             return
+        if config.timing_failure not in {"needs_review", "stop"}:
+            raise ValueError("Unknown timing failure policy")
+        if config.translation == "cloud" and (not config.cloud_translation_consent or
+                not config.cloud_translation_url.startswith("https://") or not config.cloud_translation_model):
+            raise ValueError("Cloud translation needs an HTTPS endpoint, model and explicit dialogue-sharing consent")
         from ..providers.asr import resolve_asr_provider
         caps = self.capabilities()["providers"]
         missing = [tool for tool in ("ffmpeg", "ffprobe") if not shutil.which(tool)]
@@ -424,6 +437,10 @@ class ApplicationService:
         if payload.get("verify_setup"):
             self.validate_job_setup(config, analysis=analysis)
         store = ProjectStore(config.output_dir, config.source)
+        saved_project = store.load()
+        for field in ("context", "glossary", "asr_prompt"):
+            if field not in payload and field in saved_project:
+                setattr(config, field, saved_project[field])
         if not config.series_id:
             config.series_id = str(store.load().get("series_id") or "")
         if config.mode == "dub" and config.target_language != "en" and config.tts_engine not in {"auto", "chatterbox", "elevenlabs"}:
@@ -462,6 +479,10 @@ class ApplicationService:
     def run_sync(self, payload: Dict[str, Any], *, analysis: bool = False) -> dict:
         config = config_from_dict(payload)
         store = ProjectStore(config.output_dir, config.source)
+        saved_project = store.load()
+        for field in ("context", "glossary", "asr_prompt"):
+            if field not in payload and field in saved_project:
+                setattr(config, field, saved_project[field])
         if not config.series_id:
             config.series_id = str(store.load().get("series_id") or "")
         if config.mode == "dub" and config.target_language != "en" and config.tts_engine not in {"auto", "chatterbox", "elevenlabs"}:
@@ -494,7 +515,7 @@ class ApplicationService:
             raise CancelledError("Cancelled by user")
         return snapshot
 
-    def resume_dub(self, output_dir: str, project_id: str, dub_id: str, *, api_key: str = "") -> str:
+    def resume_dub(self, output_dir: str, project_id: str, dub_id: str, *, api_key: str = "", cloud_api_key: str = "") -> str:
         """Retry an interrupted version with its original settings and cache directory."""
         project = self.get_project(output_dir, project_id)
         dub = next((d for d in project.get("dubs", []) if d.get("id") == dub_id), None)
@@ -509,6 +530,8 @@ class ApplicationService:
             raise ValueError("Dub output folder has changed")
         if saved.get("keep_work") is False:
             raise ValueError("This dub was configured to discard processing files and cannot resume")
+        if saved.get("cloud_translation_api_key") == "<redacted>":
+            saved["cloud_translation_api_key"] = cloud_api_key
         if saved.get("elevenlabs_api_key") == "<redacted>":
             if not api_key:
                 raise ValueError("Enter the ElevenLabs key in Settings before resuming this dub")
@@ -863,9 +886,9 @@ class ApplicationService:
         return {"source": value, "kind": "file", "title": path.name,
                 "duration": duration, "size_bytes": stat.st_size, "modified_at": stat.st_mtime}
 
-    def update_project(self, output_dir: str, project_id: str, name: str, series_id: str) -> dict:
+    def update_project(self, output_dir: str, project_id: str, name: str, series_id: str, *, context=None, glossary=None, asr_prompt=None) -> dict:
         project = self.get_project(output_dir, project_id)
-        return ProjectStore(Path(output_dir), project["source"]).rename(name, series_id)
+        return ProjectStore(Path(output_dir), project["source"]).rename(name, series_id, context=context, glossary=glossary, asr_prompt=asr_prompt)
 
     def delete_dub(self, output_dir: str, project_id: str, dub_id: str) -> dict:
         if not output_dir or not project_id or not dub_id:

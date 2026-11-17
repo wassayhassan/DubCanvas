@@ -161,7 +161,7 @@ def validate_review(row, source, target):
 def translate_prompt(source, context, glossary, language="English", problem=""):
     return (f"Translate this Chinese dialogue into faithful natural {language}. "
         "Preserve every fact, number, negation, rank, name, relationship and emotional intent. "
-        "Do not shorten by omitting plot information. Personal names use consistent pinyin. "
+        "Use the supplied syllable budget as a soft speech-length target; never omit plot information to fit. Personal names use consistent pinyin. "
         "Return ONLY the complete translated dialogue, no commentary.\n"
         f"Terminology: {json.dumps(glossary, ensure_ascii=False)}\n"
         f"Scene and episode context: {context}\nRepair requirements: {problem}\nSource: {source}")
@@ -190,7 +190,7 @@ def localize(segments, config, q, checkpoints, glossary, runner, progress, parti
                 for attempt in range(3):
                     raw = translator.call({"prompt": translate_prompt(seg.text, context,
                         glossary.relevant(seg.text), target_name(config.target_language),
-                        "Previous output was invalid; translate all dialogue" if attempt else "")})
+                        "Previous output was invalid; translate all dialogue" if attempt else ""), "temperature": .3 + attempt*.2})
                     text = raw["text"].strip().strip('"')
                     if translation_is_usable(seg.text, text, "zh", config.target_language):
                         break
@@ -284,7 +284,9 @@ def scene_context(rows, index, context):
     current = rows[index]
     neighboring = [row for row in rows[max(0, index - 4):index + 5]
                    if abs(row["start"] - current["start"]) < 90]
-    return json.dumps({"project_context": context[:1500], "neighboring_source": neighboring}, ensure_ascii=False)
+    return json.dumps({"project_context": context[:1500], "neighboring_source": neighboring,
+        "seconds": round(current["end"]-current["start"], 2),
+        "syllable_budget": max(1, round((current["end"]-current["start"])*4))}, ensure_ascii=False)
 
 def episode_context(q, glossary, source, scene):
     path = q["episode_context_path"]

@@ -182,6 +182,12 @@ struct NewDubView: View {
                     .frame(width: 240)
                 }
 
+                if state.translationProvider == .cloud {
+                    TextField("HTTPS chat-completions endpoint", text: $state.cloudEndpoint)
+                    TextField("Cloud model", text: $state.cloudModel)
+                    SecureField("API key (this session only)", text: $state.cloudAPIKey)
+                    Toggle("Send dialogue and project context to this provider", isOn: $state.cloudConsent)
+                }
                 if state.translationProvider == .llm || state.translationProvider == .auto {
                     settingRow("Translation model") {
                         Picker("Translation model", selection: $state.llmModel) {

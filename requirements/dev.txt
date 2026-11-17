@@ -1,0 +1,9 @@
+-c ../constraints.txt
+numpy
+soundfile
+opencv-python-headless
+psutil==7.2.2
+ruff==0.14.5
+pyright==1.1.407
+coverage==7.11.3
+cryptography>=46,<47

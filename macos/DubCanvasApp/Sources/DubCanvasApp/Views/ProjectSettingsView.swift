@@ -26,6 +26,15 @@ struct ProjectSettingsView: View {
                             .disabled(state.projectNameProblem(excluding: project.id) != nil)
                     }
                 }
+                Section("Source context") {
+                    TextField("Story and speaker context", text: $state.seriesContext, axis: .vertical)
+                    TextField("Recognition hints (optional names)", text: $state.asrPrompt, axis: .vertical)
+                    Text("Glossary: JSON object mapping source terms to their translations")
+                    TextEditor(text: $state.projectGlossary).frame(minHeight: 90)
+                    if (try? state.parsedGlossary()) == nil {
+                        Text("Enter valid JSON with text keys and values.").foregroundStyle(.orange)
+                    }
+                }
                 Section("Processing defaults") {
                     Toggle("Resume cached processing", isOn: $state.resumeCachedWork)
                     Toggle("Detect characters", isOn: $state.detectCharacters)

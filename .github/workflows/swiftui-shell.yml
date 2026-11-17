@@ -1,16 +1,23 @@
 name: SwiftUI shell build
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
     branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-swiftui:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Build SwiftUI app package
         run: swift test --package-path macos/DubCanvasApp

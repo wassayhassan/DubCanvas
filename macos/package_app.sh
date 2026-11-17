@@ -160,6 +160,13 @@ if [[ "$EMBED_VENV" -eq 1 ]]; then
   ditto "$ROOT/.venv" "$BACKEND/.venv"
 fi
 
+# A build without a trusted key can run, but cannot authenticate automatic updates.
+UPDATE_PUBLIC_KEY="${DUBCANVAS_UPDATE_PUBLIC_KEY:-}"
+if [[ -n "$UPDATE_PUBLIC_KEY" && ! "$UPDATE_PUBLIC_KEY" =~ '^[A-Za-z0-9+/]{43}=$' ]]; then
+  echo "Invalid Ed25519 update public key" >&2
+  exit 1
+fi
+
 cat > "$CONTENTS/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -183,6 +190,8 @@ cat > "$CONTENTS/Info.plist" <<EOF
   <string>$SHORT_VERSION</string>
   <key>CFBundleVersion</key>
   <string>$SOURCE_TIMESTAMP</string>
+  <key>DubCanvasUpdatePublicKey</key>
+  <string>$UPDATE_PUBLIC_KEY</string>
   <key>DubCanvasSourceRevision</key>
   <string>$SOURCE_REVISION</string>
   <key>DubCanvasSourceTimestamp</key>
@@ -198,8 +207,16 @@ cat > "$CONTENTS/Info.plist" <<EOF
 EOF
 
 if [[ "$SIGN" -eq 1 ]]; then
-  echo "Applying local ad-hoc signature…"
-  codesign --force --deep --sign - "$APP"
+  if [[ -n "${DUBCANVAS_SIGNING_IDENTITY:-}" ]]; then
+    codesign --force --deep --options runtime --timestamp --sign "$DUBCANVAS_SIGNING_IDENTITY" "$APP"
+    if [[ -n "${DUBCANVAS_NOTARY_PROFILE:-}" ]]; then
+      ditto -c -k --keepParent "$APP" "$ROOT/dist/notarize.zip"
+      xcrun notarytool submit "$ROOT/dist/notarize.zip" --keychain-profile "$DUBCANVAS_NOTARY_PROFILE" --wait
+      xcrun stapler staple "$APP"
+    fi
+  else
+    codesign --force --deep --sign - "$APP"
+  fi
 fi
 
 if [[ "$INSTALL" -eq 1 ]]; then

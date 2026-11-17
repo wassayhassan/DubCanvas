@@ -30,7 +30,7 @@ def _safe(value: Any) -> Any:
 
 def _redacted_config(config: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(config)
-    for key in ("elevenlabs_api_key", "api_key", "token", "password"):
+    for key in ("elevenlabs_api_key", "cloud_translation_api_key", "api_key", "token", "password"):
         if key in data and data[key]:
             data[key] = "<redacted>"
     tts = data.get("tts")
@@ -39,6 +39,8 @@ def _redacted_config(config: Dict[str, Any]) -> Dict[str, Any]:
         if tts.get("api_key"):
             tts["api_key"] = "<redacted>"
         data["tts"] = tts
+    if isinstance(data.get("translation"), dict):
+        data["translation"] = _redacted_config(data["translation"])
     return _safe(data)
 
 
@@ -165,10 +167,16 @@ class ProjectStore:
         return data
 
     @serialized
-    def rename(self, name: str, series_id: str) -> dict:
+    def rename(self, name: str, series_id: str, *, context=None, glossary=None, asr_prompt=None) -> dict:
         payload = self.load()
         if not payload:
             raise FileNotFoundError(self.project_id)
+        if glossary is not None:
+            if not isinstance(glossary, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in glossary.items()):
+                raise ValueError("Glossary must be an object of source terms and translations")
+            payload["glossary"] = glossary
+        if context is not None: payload["context"] = str(context)
+        if asr_prompt is not None: payload["asr_prompt"] = str(asr_prompt)
         payload["name"] = self._validated_name(name)
         payload["series_id"] = series_id.strip()
         payload["updated_at"] = _now()
@@ -547,6 +555,7 @@ def list_projects(output_dir: Path) -> list[dict]:
             "source_title": str(data.get("source_title") or ""),
             "source_language": data.get("source_language"),
             "series_id": str(data.get("series_id") or ""),
+            "context": data.get("context", ""), "glossary": data.get("glossary", {}), "asr_prompt": data.get("asr_prompt", ""),
             "output_dir": str(data.get("output_dir") or Path(output_dir).expanduser()),
             "status": str(data.get("status") or "unknown"),
             "stage": str(data.get("stage") or ""),

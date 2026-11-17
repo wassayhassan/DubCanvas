@@ -4,6 +4,13 @@ import XCTest
 @testable import DubCanvasApp
 
 final class AppUpdaterTests: XCTestCase {
+    private let key = Curve25519.Signing.PrivateKey()
+    private var publicKey: String { key.publicKey.rawRepresentation.base64EncodedString() }
+    private func signed(_ hash: String) throws -> AppUpdateManifest {
+        var manifest = AppUpdateManifest(schema: 2, revision: revision, sourceTimestamp: 123, version: "4.0", sha256: hash)
+        manifest.signature = try key.signature(for: manifest.signingData).base64EncodedString()
+        return manifest
+    }
     private let revision = String(repeating: "a", count: 40)
     func testPreparationCommandTimeoutIsLogged() throws {
         let log = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -25,23 +32,32 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertEqual(actions, ["window closed", "shutdown", "quit"])
     }
     func testManifestRejectsInvalidFields() throws {
-        let valid = AppUpdateManifest(schema: 1, revision: revision, sourceTimestamp: 123, version: "4.0", sha256: String(repeating: "b", count: 64))
-        XCTAssertNoThrow(try valid.validate())
+        let valid = try signed(String(repeating: "b", count: 64))
+        XCTAssertNoThrow(try valid.validate(publicKey: publicKey))
+        XCTAssertThrowsError(try valid.validate(publicKey: publicKey, minimumTimestamp: 124))
+        XCTAssertThrowsError(try valid.validate(publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation.base64EncodedString()))
+        var unsigned = valid
+        unsigned.signature = nil
+        XCTAssertThrowsError(try unsigned.validate(publicKey: publicKey))
+        var tampered = AppUpdateManifest(schema: 2, revision: revision, sourceTimestamp: 124, version: "4.0", sha256: valid.sha256)
+        tampered.signature = valid.signature
+        XCTAssertThrowsError(try tampered.validate(publicKey: publicKey))
         XCTAssertEqual(valid.downloadURL.host, "github.com")
-        XCTAssertThrowsError(try AppUpdateManifest(schema: 1, revision: "../other", sourceTimestamp: 123, version: "4.0", sha256: valid.sha256).validate())
-        XCTAssertThrowsError(try AppUpdateManifest(schema: 1, revision: revision, sourceTimestamp: 123, version: "4.0", sha256: "invalid").validate())
     }
+
     func testBadChecksumLeavesCurrentAppUntouched() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let current = root.appendingPathComponent("current.app")
-        try Data("original app".utf8).write(to: current)
+        try FileManager.default.createDirectory(at: current.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        try Data("original app".utf8).write(to: current.appendingPathComponent("marker"))
+        try PropertyListSerialization.data(fromPropertyList: ["DubCanvasSourceTimestamp": "100", "DubCanvasUpdatePublicKey": publicKey], format: .xml, options: 0).write(to: current.appendingPathComponent("Contents/Info.plist"))
         let archive = root.appendingPathComponent("update.zip")
         try Data("corrupt download".utf8).write(to: archive)
-        let manifest = AppUpdateManifest(schema: 1, revision: revision, sourceTimestamp: 123, version: "4.0", sha256: String(repeating: "0", count: 64))
+        let manifest = try signed(String(repeating: "0", count: 64))
         XCTAssertThrowsError(try AppUpdater.prepare(archive: archive, work: root, staged: root.appendingPathComponent("staged.app"), current: current, manifest: manifest, logURL: root.appendingPathComponent("update.log")))
-        XCTAssertEqual(try Data(contentsOf: current), Data("original app".utf8))
+        XCTAssertEqual(try Data(contentsOf: current.appendingPathComponent("marker")), Data("original app".utf8))
     }
     func testVerifiedUpdateCopiesRuntimeWithoutReplacingCurrentApp() throws {
         let fm = FileManager.default
@@ -71,8 +87,9 @@ final class AppUpdaterTests: XCTestCase {
         let executable = source.appendingPathComponent("Contents/MacOS")
         try fm.createDirectory(at: executable, withIntermediateDirectories: true)
         try fm.copyItem(at: URL(fileURLWithPath: "/bin/echo"), to: executable.appendingPathComponent("DubCanvas"))
-        let info: [String: Any] = ["CFBundleIdentifier": "com.animedubber.app", "CFBundleExecutable": "DubCanvas", "CFBundlePackageType": "APPL", "DubCanvasSourceRevision": revision]
+        let info: [String: Any] = ["CFBundleIdentifier": "com.animedubber.app", "CFBundleExecutable": "DubCanvas", "CFBundlePackageType": "APPL", "DubCanvasSourceRevision": revision, "DubCanvasSourceTimestamp": "123", "CFBundleShortVersionString": "4.0", "DubCanvasUpdatePublicKey": publicKey]
         try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: source.appendingPathComponent("Contents/Info.plist"))
+        try PropertyListSerialization.data(fromPropertyList: ["DubCanvasSourceTimestamp": "100", "DubCanvasUpdatePublicKey": publicKey], format: .xml, options: 0).write(to: current.appendingPathComponent("Contents/Info.plist"))
         try Data("#!/bin/zsh\nexit 0\n".utf8).write(to: source.appendingPathComponent("Contents/Resources/install_update.sh"))
         let log = root.appendingPathComponent("update.log")
         fm.createFile(atPath: log.path, contents: nil)
@@ -80,7 +97,7 @@ final class AppUpdaterTests: XCTestCase {
         let archive = root.appendingPathComponent("update.zip")
         try AppUpdater.run("/usr/bin/ditto", ["-c", "-k", "--keepParent", source.path, archive.path], logURL: log)
         let hash = SHA256.hash(data: try Data(contentsOf: archive)).map { String(format: "%02x", $0) }.joined()
-        let manifest = AppUpdateManifest(schema: 1, revision: revision, sourceTimestamp: 123, version: "4.0", sha256: hash)
+        let manifest = try signed(hash)
         let staged = root.appendingPathComponent("staged.app")
         let helper = try AppUpdater.prepare(archive: archive, work: root, staged: staged, current: current, manifest: manifest, logURL: log)
         XCTAssertTrue(fm.fileExists(atPath: helper.path))

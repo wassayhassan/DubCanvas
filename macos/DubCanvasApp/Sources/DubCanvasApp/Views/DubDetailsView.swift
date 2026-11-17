@@ -101,13 +101,16 @@ struct DubDetailsView: View {
                     if dub.status == "completed" && player != nil {
                         GroupBox("Result") {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Ready to watch · \(dub.language.uppercased())")
+                                Text(dub.warnings.contains { $0.localizedCaseInsensitiveContains("voice omitted") } ? "Finished with missing voices — review required" : "Ready to watch · \(dub.language.uppercased())")
                                     .font(.headline)
                                 Text(dub.warnings.isEmpty ? "Processing finished. Watch the video to check the result." :
                                     "Processing finished with \(dub.warnings.count) note(s), including \(dub.warnings.filter { $0.localizedCaseInsensitiveContains("overlap") || $0.localizedCaseInsensitiveContains("timing") }.count) about timing. Review them below if the video needs adjustment.")
                                     .foregroundStyle(.secondary)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }
+                    }
+                    if let timingPath = dub.artifacts["timing_report"] {
+                        ArtifactLink(title: "Timing and omitted-voice report", path: timingPath)
                     }
                     if dub.artifacts["review_report"] != nil {
                         Button("Review Subtitle and Timing Notes", systemImage: "text.magnifyingglass") {

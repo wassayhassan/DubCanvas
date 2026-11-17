@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from anime_dubber.core import download_source
+from anime_dubber.core import download_source, CommandRunner
 
 
 class CP:
@@ -11,8 +11,9 @@ class CP:
         self.stdout = stdout
 
 
-class FakeRunner:
+class FakeRunner(CommandRunner):
     def __init__(self, work, failures=2):
+        super().__init__()
         self.work = Path(work)
         self.failures = failures
         self.calls = []

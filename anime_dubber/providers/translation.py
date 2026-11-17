@@ -12,13 +12,14 @@ def ollama_generate(
     model: str,
     prompt: str,
     timeout: int = 300,
+    temperature: float = .15,
 ) -> str:
     url = (base_url or "http://127.0.0.1:11434").rstrip("/") + "/api/generate"
     payload = json.dumps({
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": 0.15},
+        "options": {"temperature": temperature},
     }).encode("utf-8")
     request = urllib.request.Request(
         url,

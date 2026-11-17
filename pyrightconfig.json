@@ -1,0 +1,7 @@
+{
+  "include": ["anime_dubber/audio_analysis.py", "anime_dubber/translation.py", "anime_dubber/providers/synthesis.py", "macos/update_signing.py"],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
+  "pythonVersion": "3.11"
+}

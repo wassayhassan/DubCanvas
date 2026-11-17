@@ -24,6 +24,9 @@ class ReviewTests(unittest.TestCase):
         # behavior belongs to test_visual_sync, not subtitle review tests.
         visual = patch("anime_dubber.visual_sync.align_dub_to_visible_speech",
                        side_effect=lambda _video, segments, *_args, **_kwargs: list(segments))
+        loudness = patch("anime_dubber.loudness.match_loudness", side_effect=lambda mixed, *_: mixed)
+        loudness.start()
+        self.addCleanup(loudness.stop)
         visual.start()
         self.addCleanup(visual.stop)
 
@@ -63,11 +66,11 @@ class ReviewTests(unittest.TestCase):
                  patch("anime_dubber.core.render_dub_timeline", return_value=audio), \
                  patch("anime_dubber.core.build_dialogue_safe_background", return_value=audio), \
                  patch("anime_dubber.core.mix_background_and_dub", return_value=audio), \
-                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_: dest.write_bytes(b"video")):
+                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_, **__: (dest.write_bytes(b"video"), dest)[1]):
                 result = run_pipeline(cfg, lambda _: None, CommandRunner())
                 resumed = run_pipeline(cfg, lambda _: None, CommandRunner())
             self.assertEqual(candidate.call_count, 2)
-            self.assertEqual(tested, [original, original, "The Tang Sect", "Tang Sect", "Tang Sect"])
+            self.assertEqual(tested, [original, "The Tang Sect", "Tang Sect", "Tang Sect"])
             self.assertIn("Tang Sect", result["translated_srt"].read_text(encoding="utf-8"))
             self.assertIn("Tang Sect", resumed["translated_srt"].read_text(encoding="utf-8"))
             fixes = json.loads(next((base / "out" / "versions" / "auto_fit").glob("*.timing-fixes.json")).read_text(encoding="utf-8"))
@@ -107,19 +110,18 @@ class ReviewTests(unittest.TestCase):
                  patch("anime_dubber.core.render_dub_timeline", return_value=audio), \
                  patch("anime_dubber.core.build_dialogue_safe_background", return_value=audio), \
                  patch("anime_dubber.core.mix_background_and_dub", return_value=audio), \
-                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_: dest.write_bytes(b"video")):
+                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_, **__: (dest.write_bytes(b"video"), dest)[1]):
                 result = run_pipeline(cfg, lambda _: None, CommandRunner())
                 run_pipeline(cfg, lambda _: None, CommandRunner())
             self.assertEqual(candidate.call_count, 0)
-            self.assertEqual(calls, [("The once famous Tang Sect", 1.0),
-                                     ("The once famous Tang Sect", 1.5),
+            self.assertEqual(calls, [("The once famous Tang Sect", 1.5),
                                      ("The once famous Tang Sect", 1.5)])
             self.assertIn("The once famous Tang Sect", result["translated_srt"].read_text(encoding="utf-8"))
             fixes = json.loads(next((base / "out" / "versions" / "tempo").glob("*.timing-fixes.json")).read_text(encoding="utf-8"))
             self.assertEqual(fixes["1"]["max_tempo"], 1.5)
 
 
-    def test_unfittable_speech_blocks_render_and_preserves_subtitles(self):
+    def test_unfittable_speech_finishes_with_review_flag_and_subtitles(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             video = base / "source.mp4"; video.write_bytes(b"video")
@@ -155,13 +157,12 @@ class ReviewTests(unittest.TestCase):
                  patch("anime_dubber.core.render_dub_timeline", return_value=audio), \
                  patch("anime_dubber.core.build_dialogue_safe_background", return_value=audio), \
                  patch("anime_dubber.core.mix_background_and_dub", return_value=audio), \
-                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_: dest.write_bytes(b"video")):
-                with self.assertRaisesRegex(PipelineError, "cannot fit safely"):
-                    run_pipeline(cfg, warnings.append, runner)
-                with self.assertRaisesRegex(PipelineError, "cannot fit safely"):
-                    run_pipeline(cfg, warnings.append, runner)
+                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_, **__: (dest.write_bytes(b"video"), dest)[1]):
+                result = run_pipeline(cfg, warnings.append, runner)
+                self.assertEqual(json.loads(result["timing_report"].read_text())["1"]["status"], "needs_review")
+                self.assertIn("A long greeting", result["translated_srt"].read_text())
             self.assertTrue(list((base / "out" / "versions" / "dub_timing").glob("*.srt")))
-            self.assertFalse(list((base / "out" / "versions" / "dub_timing").glob("*DUB.mp4")))
+            self.assertTrue(list((base / "out" / "versions" / "dub_timing").glob("*DUB.mp4")))
             self.assertTrue(list((base / "out" / "versions" / "dub_timing").glob("*.timing.json")))
 
 
@@ -283,7 +284,7 @@ class ReviewTests(unittest.TestCase):
                  patch("anime_dubber.core.render_dub_timeline", return_value=timeline), \
                  patch("anime_dubber.core.build_dialogue_safe_background", return_value=background), \
                  patch("anime_dubber.core.mix_background_and_dub", return_value=mixed), \
-                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_: dest.write_bytes(b"video")):
+                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dest, *_, **__: (dest.write_bytes(b"video"), dest)[1]):
                 result = run_pipeline(config, lambda _: None, runner)
                 report = next((base / "out" / "versions" / "dub_review").glob("*.review.json"))
                 data = json.loads(report.read_text(encoding="utf-8"))

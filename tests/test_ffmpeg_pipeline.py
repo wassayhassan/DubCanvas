@@ -47,7 +47,7 @@ class FfmpegPipelineTests(unittest.TestCase):
                         output.setnchannels(2); output.setsampwidth(2); output.setframerate(44100)
                         output.writeframes(b"\0" * 4410 * 4)
                 return subprocess.CompletedProcess([], 0, "", "")
-            with patch.object(runner, "run", side_effect=incomplete_demucs):
+            with patch.object(runner, "run_stream", side_effect=incomplete_demucs):
                 with self.assertRaisesRegex(PipelineError, "incomplete audio stems"):
                     separate_dialogue(audio, root, runner, lambda _: None,
                                       Config(source="video.mp4", output_dir=root, demucs_device="cpu"))
@@ -81,7 +81,8 @@ class FfmpegPipelineTests(unittest.TestCase):
                                     "stream=codec_type:format=duration", "-of", "json",
                                     str(result["dubbed_video"])], capture_output=True, text=True, check=True)
             media = json.loads(probe.stdout)
-            self.assertEqual({s["codec_type"] for s in media["streams"]}, {"video", "audio"})
+            self.assertEqual({s["codec_type"] for s in media["streams"]}, {"video", "audio", "subtitle"})
+            self.assertEqual(sum(s["codec_type"] == "audio" for s in media["streams"]), 2)
             self.assertGreater(float(media["format"]["duration"]), 2.2)
             output_wav = root / "check.wav"
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i",
@@ -183,10 +184,12 @@ class FfmpegPipelineTests(unittest.TestCase):
                 "-ac", "1", "-ar", "44100", str(long_source),
             ], check=True)
 
+            synthesized = []
             def fake_say(_text, out_aiff, _config, _runner, voice="", rate=205):
+                synthesized.append(_text)
                 shutil.copyfile(long_source, out_aiff)
 
-            cfg = Config(source="x", output_dir=d, tts_engine="macos", force=True)
+            cfg = Config(source="x", output_dir=d, tts_engine="macos")
             seg = Segment(5.0, 5.40, "你好", "Hello")
             runner = CommandRunner()
             messages = []
@@ -215,7 +218,7 @@ class FfmpegPipelineTests(unittest.TestCase):
             self.assertLessEqual(ffprobe_duration(sped_clip, runner), 1.43)
             speed_filters = [call.args[0][call.args[0].index("-af") + 1]
                              for call in sped_commands.call_args_list if "-af" in call.args[0]]
-            self.assertTrue(any("atempo=" in item for item in speed_filters))
+            self.assertTrue(any("atempo=" in item or "rubberband=tempo=" in item for item in speed_filters))
             self.assertFalse(any("atempo=1.5" in item for item in speed_filters))
 
             with patch("anime_dubber.core.synthesize_macos", side_effect=fake_say):
@@ -228,6 +231,8 @@ class FfmpegPipelineTests(unittest.TestCase):
                                             next_start=None, max_tempo=1.5)
             self.assertLessEqual(ffprobe_duration(fallback, runner), 1.4)
 
+
+            self.assertEqual(synthesized, ["Hello"])
 
     def test_trailing_tts_silence_does_not_force_fast_speech(self):
         with tempfile.TemporaryDirectory() as td:

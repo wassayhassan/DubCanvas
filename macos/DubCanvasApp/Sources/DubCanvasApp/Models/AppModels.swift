@@ -130,6 +130,7 @@ enum TranslationProvider: String, CaseIterable, Identifiable {
     case llm
     case ollama
     case whisper
+    case cloud
 
     var id: String { rawValue }
     var title: String {
@@ -138,6 +139,7 @@ enum TranslationProvider: String, CaseIterable, Identifiable {
         case .llm: "Local MLX LLM"
         case .ollama: "Ollama"
         case .whisper: "Whisper direct"
+        case .cloud: "Cloud (opt in)"
         }
     }
 }
@@ -280,6 +282,9 @@ struct ProjectSummary: Identifiable {
     let lastError: String?
     let sourceLanguage: String?
     let analysisRevision: Int
+    let context: String
+    let glossary: [String: String]
+    let asrPrompt: String
 
     init?(dictionary: [String: Any]) {
         guard let projectID = dictionary["project_id"] as? String, !projectID.isEmpty else { return nil }
@@ -312,6 +317,9 @@ struct ProjectSummary: Identifiable {
         lastError = dictionary["last_error"] as? String
         sourceLanguage = dictionary["source_language"] as? String
         analysisRevision = (dictionary["analysis_revision"] as? NSNumber)?.intValue ?? 0
+        context = dictionary["context"] as? String ?? ""
+        glossary = dictionary["glossary"] as? [String: String] ?? [:]
+        asrPrompt = dictionary["asr_prompt"] as? String ?? ""
     }
 
     var displayName: String {
@@ -358,6 +366,9 @@ struct DubSummary: Identifiable {
     let sync: String
     let duration: Double?
     let analysisRevision: Int
+    let context: String
+    let glossary: [String: String]
+    let asrPrompt: String
 
     init?(dictionary: [String: Any]) {
         guard let id = dictionary["id"] as? String else { return nil }
@@ -377,6 +388,9 @@ struct DubSummary: Identifiable {
         sync = dictionary["sync"] as? String ?? "Timing metadata unavailable"
         duration = (dictionary["duration"] as? NSNumber)?.doubleValue
         analysisRevision = (dictionary["analysis_revision"] as? NSNumber)?.intValue ?? 0
+        context = dictionary["context"] as? String ?? ""
+        glossary = dictionary["glossary"] as? [String: String] ?? [:]
+        asrPrompt = dictionary["asr_prompt"] as? String ?? ""
     }
 
     var title: String { name.isEmpty ? "\(language.uppercased()) dub" : name }
