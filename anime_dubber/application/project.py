@@ -4,15 +4,14 @@ import json
 import hashlib
 import os
 import shutil
-import uuid
 import tempfile
 from functools import wraps
 from .project_lock import folder_lock
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional
 
-from ..core import Config, source_key
+from ..core import source_key
 
 
 def _now() -> str:

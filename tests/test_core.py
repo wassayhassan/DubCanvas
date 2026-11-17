@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +6,6 @@ from anime_dubber.core import (
     Segment,
     atempo_chain,
     coalesce_segments,
-    extract_json_array,
     parse_translation_response,
     sanitize_name,
     sanitize_segments,

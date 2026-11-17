@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from .languages import source_name, target_name
+from .prompts import render_prompt
 from urllib.parse import parse_qs, urlparse
 
 WHISPER_MODEL = "mlx-community/whisper-large-v3-mlx"
@@ -740,15 +741,7 @@ def translate_with_llm(
     model, tokenizer = load(config.llm_model)
 
     def generate_text(prompt: str, max_tokens: int = 2200) -> str:
-        messages = [{"role": "user", "content": prompt}]
-        if getattr(tokenizer, "chat_template", None) is not None:
-            try:
-                rendered = tokenizer.apply_chat_template(messages, add_generation_prompt=True,
-                                                         enable_thinking=False)
-            except TypeError:
-                rendered = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
-        else:
-            rendered = prompt
+        rendered = render_prompt(tokenizer, prompt)
         response = generate(model, tokenizer, prompt=rendered, max_tokens=max_tokens, verbose=False)
         return _response_text(response)
 
@@ -1957,7 +1950,6 @@ def render_dub_timeline(
         mix_labels = ["[base]"]
         for j, (seg, _path, clip_dur) in enumerate(overlaps, start=1):
             clip_abs_start = seg.start
-            clip_abs_end = seg.start + clip_dur
             slice_start = max(0.0, start - clip_abs_start)
             slice_end = min(clip_dur, end - clip_abs_start)
             delay_ms = max(0, int(round((max(start, clip_abs_start) - start) * 1000)))
@@ -2264,35 +2256,6 @@ def _mux_to_temp(video: Path, audio: Path, temp: Path, final: Path, runner: Comm
     ])
     validate_media_streams(temp, runner)
     temp.replace(final)
-
-
-def doctor() -> Tuple[bool, List[str]]:
-    checks: List[Tuple[str, bool, str]] = []
-    checks.append(("macOS", platform.system() == "Darwin", platform.platform()))
-    checks.append(("Apple Silicon", platform.machine() == "arm64", platform.machine()))
-    for exe in ["ffmpeg", "ffprobe", "yt-dlp", "deno", "say"]:
-        p = shutil.which(exe)
-        checks.append((exe, bool(p), p or "not found"))
-    for mod in ["mlx_whisper", "mlx_lm", "demucs", "numpy", "soundfile"]:
-        try:
-            __import__(mod)
-            checks.append((mod, True, "import OK"))
-        except Exception as e:
-            checks.append((mod, False, f"import failed: {e}"))
-    try:
-        import speechbrain  # noqa: F401
-        checks.append(("speechbrain", True, "optional ECAPA speaker model available"))
-    except Exception as e:
-        # Optional: v3 has a built-in acoustic clustering fallback.
-        checks.append(("speechbrain", True, f"optional; fallback will be used ({e})"))
-    try:
-        import tkinter  # noqa: F401
-        checks.append(("tkinter", True, "import OK"))
-    except Exception as e:
-        checks.append(("tkinter", False, f"import failed: {e}"))
-    lines = [f"{'OK' if ok else 'FAIL':4}  {name:16} {detail}" for name, ok, detail in checks]
-    return all(ok for _, ok, _ in checks), lines
-
 
 
 def _character_map_path(config: Config, out: Path, key: str) -> Path:
@@ -2722,9 +2685,6 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         saved_tempo = (min(1.5, float(saved_fix.get("max_tempo", 1.0)))
                        if isinstance(saved_fix, dict) and saved_fix.get("source") == seg.text
                        and saved_fix.get("replacement") == seg.translated and not saved_fix.get("allow_overlap") else 1.0)
-        saved_overlap = (isinstance(saved_fix, dict) and saved_fix.get("source") == seg.text
-                         and saved_fix.get("replacement") == seg.translated
-                         and saved_fix.get("allow_overlap") is True)
         try:
             clips.append(prepare_tts_clip(seg, i, tts_dir, config, runner, progress,
                                           profile=profile, next_start=next_start,

@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import json
 import math
-import platform
 import re
-import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -298,9 +296,6 @@ class SpeakerEmbedder:
             return [_normalize(row).astype(float).tolist() for row in e]
         except Exception:
             return [a.embedding for a in acoustics]
-
-    def embed(self, x: np.ndarray, acoustic: AudioFeatures) -> List[float]:
-        return self.embed_many([x], [acoustic])[0]
 
 
 def _confident_voice_class(feature: AudioFeatures) -> str:

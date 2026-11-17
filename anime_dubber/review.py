@@ -17,6 +17,7 @@ from typing import Callable, Mapping
 
 from .core import DEFAULT_CONTEXT, DEFAULT_GLOSSARY, _atomic_json_write, _response_text, glossary_string, parse_translation_response
 from .languages import source_name, target_name
+from .prompts import render_prompt
 
 
 TIME = re.compile(r"(\d{2}):(\d{2}):(\d{2})[,\.](\d{3})")
@@ -272,14 +273,7 @@ def review_subtitles(
                         "The transcription may be wrong, so do not add context.\n"
                         f"{speech_name}: {row['asr_candidate']}"
                     )
-                    if getattr(tokenizer, "chat_template", None) is not None:
-                        try:
-                            alternate_prompt = tokenizer.apply_chat_template(
-                                [{"role": "user", "content": alternate_prompt}],
-                                add_generation_prompt=True, enable_thinking=False)
-                        except TypeError:
-                            alternate_prompt = tokenizer.apply_chat_template(
-                                [{"role": "user", "content": alternate_prompt}], add_generation_prompt=True)
+                    alternate_prompt = render_prompt(tokenizer, alternate_prompt)
                     alternate_text = _response_text(generate(llm, tokenizer, prompt=alternate_prompt,
                                                              max_tokens=128, verbose=False)).strip()
                     alternate_text = re.sub(r"^```[^\n]*\n|\n```$", "", alternate_text).strip().strip('"')
@@ -325,15 +319,7 @@ def review_subtitles(
                     f"{timing_instruction}\n"
                     f"Flagged for: {', '.join(row['reasons'])}"
                 )
-                if getattr(tokenizer, "chat_template", None) is not None:
-                    messages = [{"role": "user", "content": prompt}]
-                    try:
-                        rendered = tokenizer.apply_chat_template(messages, add_generation_prompt=True,
-                                                                 enable_thinking=False)
-                    except TypeError:
-                        rendered = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
-                else:
-                    rendered = prompt
+                rendered = render_prompt(tokenizer, prompt)
                 response = generate(llm, tokenizer, prompt=rendered, max_tokens=256, verbose=False)
                 parsed = parse_translation_response(_response_text(response), [row["cue"]])
                 suggestion = parsed.get(row["cue"], "")
@@ -351,14 +337,7 @@ def review_subtitles(
                         f"Unverified existing translation: {row['translation']}\n"
                         f"Context: {context}\n{timing_instruction}"
                     )
-                    if getattr(tokenizer, "chat_template", None) is not None:
-                        try:
-                            retry_prompt = tokenizer.apply_chat_template(
-                                [{"role": "user", "content": retry_prompt}],
-                                add_generation_prompt=True, enable_thinking=False)
-                        except TypeError:
-                            retry_prompt = tokenizer.apply_chat_template(
-                                [{"role": "user", "content": retry_prompt}], add_generation_prompt=True)
+                    retry_prompt = render_prompt(tokenizer, retry_prompt)
                     retry = _response_text(generate(llm, tokenizer, prompt=retry_prompt,
                                                    max_tokens=128, verbose=False)).strip()
                     retry = re.sub(r"^```[^\n]*\n|\n```$", "", retry).strip().strip('"')

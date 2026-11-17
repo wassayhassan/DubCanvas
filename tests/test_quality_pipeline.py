@@ -1,19 +1,17 @@
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
 from anime_dubber.core import Config, CommandRunner, Segment, PipelineError, run_pipeline, analyze_only
-from anime_dubber.quality_models import options, digest
+from anime_dubber.quality_models import options
 from anime_dubber.quality_runtime import Checkpoints, Worker
 from anime_dubber.quality_timing import choose_tempo, window, speech_error, validate_schedule, protected_speech_matches, chinese_critical_matches
-from anime_dubber.localization import Glossary, localize, validate_review, parse_object, cloud_review
+from anime_dubber.localization import Glossary, localize, validate_review, cloud_review
 from anime_dubber.application.service import config_from_dict, ApplicationService
 
 class QualityConfigTests(unittest.TestCase):

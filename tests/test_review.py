@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from anime_dubber.core import CommandRunner, Config, PipelineError, ReviewRequired, Segment, TimingOverlapError, run_pipeline
+from anime_dubber.core import CommandRunner, Config, PipelineError, Segment, TimingOverlapError, run_pipeline
 from anime_dubber.review import review_subtitles, flags_for, _wrong_target_script
 from anime_dubber.timing import TimingRewriter, usable_rewrite
 

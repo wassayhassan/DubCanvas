@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import nullcontext
 import json
 import math
-import os
 from pathlib import Path
 import re
 import shutil
@@ -11,7 +10,7 @@ import shutil
 from .quality_models import options, setup_issues, file_digest, digest
 from .quality_runtime import Worker, Checkpoints, runtime_fingerprints
 from .quality_timing import edit_distance, window, choose_tempo, speech_error, validate_schedule, protected_speech_matches, chinese_critical_matches, normalize_chinese_numbers, validate_source_alignment
-from .localization import Glossary, localize, review_prompt, parse_object, validate_review, scene_context, cloud_review
+from .localization import Glossary, localize, review_prompt, parse_object, validate_review, cloud_review
 
 def _publish(runner, kind, path, language):
     callback = getattr(runner, "artifact", None)
@@ -435,7 +434,6 @@ def generate_checked_speech(segments, profiles, glossary, config, q, work, check
             checkpoints.put("speech_recovery", identity, {"attempts": attempts, "validated": False, "failures": exc.failures, "fallback_cast": fallback_cast})
 
 def speech_qa(takes, q, checkpoints, runner, progress):
-    from .core import PipelineError
     _stage(runner, "speech_quality", "Checking generated words and pronunciation")
     failures = {}
     with Worker("verifier", q, runner) as worker:
@@ -487,7 +485,7 @@ def speech_qa(takes, q, checkpoints, runner, progress):
         raise SpeechValidationFailure(failures)
 
 def fit_takes(segments, takes, cuts, q, work, runner):
-    from .core import ffprobe_duration, PipelineError, _atomic_json_write, _atomic_media_run
+    from .core import ffprobe_duration, _atomic_json_write
     _stage(runner, "visual_timing", "Planning intelligible dialogue timing")
     duration = q["media_duration"]
     clips, failed, records = [], [], []
@@ -525,7 +523,7 @@ def fit_takes(segments, takes, cuts, q, work, runner):
     return clips, failed
 
 def shorten_failed(segments, failed, config, q, checkpoints, glossary, runner):
-    from .core import PipelineError, parse_translation_response
+    from .core import parse_translation_response
     from .timing import usable_rewrite
     proposals = {}
     with Worker("translator", q, runner) as translator:
@@ -632,7 +630,7 @@ def hybrid_background(original, separated, segments, work, runner):
 
 def run_quality(config, progress, runner, *, analysis=False):
     from .core import (PipelineError, download_source, validate_source_cache, source_key, _atomic_media_run,
-        ffprobe_duration, _atomic_json_write, write_srt, write_vtt, _character_map_path, validate_media_streams)
+        ffprobe_duration, _atomic_json_write, write_srt, write_vtt, validate_media_streams)
     q = options(config.quality_settings)
     issues = setup_issues(q, mode=config.mode, analysis=analysis)
     if config.target_language != "en" or config.source_language not in {"zh", "auto"}:
