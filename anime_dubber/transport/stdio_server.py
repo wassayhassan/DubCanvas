@@ -80,6 +80,7 @@ def serve() -> int:
                     str(params.get("project_id") or ""),
                     str(params.get("dub_id") or ""),
                     api_key=str(params.get("elevenlabs_api_key") or ""),
+                    cloud_api_key=str(params.get("cloud_translation_api_key") or ""),
                 )}
             elif method == "approve_review":
                 result = service.approve_review(
@@ -109,6 +110,7 @@ def serve() -> int:
                 result = service.update_project(
                     str(params.get("output_dir") or ""), str(params.get("project_id") or ""),
                     str(params.get("name") or ""), str(params.get("series_id") or ""),
+                    context=params.get("context"), glossary=params.get("glossary"), asr_prompt=params.get("asr_prompt"),
                 )
             elif method == "delete_dub":
                 result = service.delete_dub(

@@ -53,10 +53,18 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--faster-whisper-compute-type", default="auto")
         p.add_argument(
             "--translation",
-            choices=["auto", "llm", "ollama", "whisper"],
+            choices=["auto", "llm", "ollama", "whisper", "cloud"],
             default="auto",
             help="auto uses MLX LLM when available, otherwise Whisper direct translation.",
         )
+        p.add_argument("--asr-prompt", default="")
+        p.add_argument("--asr-chunk-seconds", type=int, default=30)
+        p.add_argument("--glossary", type=Path, help="Project JSON glossary file")
+        p.add_argument("--context", default="")
+        p.add_argument("--cloud-endpoint", default="")
+        p.add_argument("--cloud-model", default="")
+        p.add_argument("--allow-cloud-translation", action="store_true")
+        p.add_argument("--timing-failure", choices=["needs_review", "stop"], default="needs_review")
         p.add_argument("--ollama-url", default="http://127.0.0.1:11434")
         p.add_argument("--ollama-model", default="qwen3:4b")
         p.add_argument("--llm-model", default="mlx-community/Qwen3-8B-4bit")
@@ -90,11 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Skip automatic subtitle quality review")
         p.add_argument("--review-before-dub", action="store_true", dest="review_before_dub",
                        help="Run automatic subtitle quality review (the default)")
-        p.add_argument("--review-model", default="mlx-community/Qwen3-8B-4bit")
+        p.add_argument("--review-model", default="mlx-community/Qwen3-14B-4bit")
         p.add_argument("--force", action="store_true")
         p.add_argument("--ducking", action="store_true")
         p.add_argument("--background-volume", type=float, default=1.0)
-        p.add_argument("--dub-volume", type=float, default=1.15)
+        p.add_argument("--dub-volume", type=float, default=1.0)
         p.add_argument("--elevenlabs-api-key", default="")
         p.add_argument("--json", action="store_true", help="Print machine-readable final result")
 
@@ -155,6 +163,9 @@ def _payload(args: argparse.Namespace) -> Dict[str, Any]:
         "pipeline_profile": args.pipeline_profile,
         "quality_settings": json.loads(args.quality_settings.read_text(encoding="utf-8")) if args.quality_settings else {},
         "source": args.source,
+        "asr_prompt": args.asr_prompt, "asr_chunk_seconds": args.asr_chunk_seconds,
+        "glossary": json.loads(args.glossary.read_text()) if args.glossary else {},
+        "context": args.context, "timing_failure": args.timing_failure,
         "output_dir": str(Path(args.output).expanduser()),
         "series_id": args.series_id,
         "target_language": args.target_language,
@@ -170,6 +181,8 @@ def _payload(args: argparse.Namespace) -> Dict[str, Any]:
         },
         "translation": {
             "provider": args.translation,
+            "endpoint": args.cloud_endpoint, "cloud_model": args.cloud_model,
+            "consent": args.allow_cloud_translation,
             "llm_model": args.llm_model,
             "ollama_url": args.ollama_url,
             "model": args.ollama_model,

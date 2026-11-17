@@ -2,9 +2,8 @@
 import hashlib
 import json
 import math
-from pathlib import Path
 
-from .core import PipelineError, CancelledError, validate_media_streams
+from .core import PipelineError
 
 def source_duration(video, runner):
     data = json.loads(runner.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration:format=duration",
@@ -60,35 +59,7 @@ def verify_video_copy(source, output, runner):
     return {"packet_count": len(before), "encoded_sha256": hashlib.sha256(
         "\n".join(row["data_hash"] for row in before).encode()).hexdigest(), "unchanged": True}
 
-def mux_preserving_video(video, audio, final, runner, progress):
-    final = Path(final)
+def mux_preserving_video(video, audio, final, runner, progress, **options):
+    from .export import export_video
     runner.set_stage("exporting", "Exporting original video with dubbed audio")
-    # Never use -shortest, a video filter or a video encoder here. MP4 may not
-    # support the source codec; a Matroska container preserves it without loss.
-    for destination in (final, final.with_suffix(".mkv")):
-        temp = destination.with_name(destination.stem + ".partial" + destination.suffix)
-        temp.unlink(missing_ok=True)
-        try:
-            command = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-i", str(audio),
-                       "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "copy"]
-            if destination.suffix == ".mp4": command += ["-movflags", "+faststart"]
-            reply = runner.run(command + [str(temp)], check=False)
-            if reply.returncode:
-                progress("Source codec needs a different container; preserving video in MKV")
-                continue
-            try:
-                validate_media_streams(temp, runner)
-                report = verify_video_copy(video, temp, runner)
-            except CancelledError:
-                raise
-            except PipelineError:
-                if destination.suffix == ".mp4":
-                    progress("MP4 could not preserve video exactly; automatically trying MKV")
-                    continue
-                raise
-            temp.replace(destination)
-            runner.diagnostic("Original video verified", **report)
-            return destination
-        finally:
-            temp.unlink(missing_ok=True)
-    raise PipelineError("Cannot stream-copy the source video into a supported container; source and checkpoints preserved")
+    return export_video(video, audio, final, runner, progress, allow_reencode=False, **options)

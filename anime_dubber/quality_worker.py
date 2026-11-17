@@ -51,7 +51,14 @@ def load(role, q):
         raise ValueError("A worker cannot retain two different model stages")
     if _loaded is not None:
         return _loaded
-    if role in {"asr", "verifier", "aligner", "tts", "translator", "reviewer"}:
+    if role == "legacy_asr":
+        if q["asr_provider"] == "faster_whisper":
+            from faster_whisper import WhisperModel
+            _loaded = WhisperModel(q["models"][role]["repo"], device=q["asr_device"], compute_type=q["asr_compute_type"])
+        else:
+            import mlx_whisper
+            _loaded = mlx_whisper
+    elif role in {"asr", "verifier", "aligner", "tts", "translator", "reviewer"}:
         import mlx.core as mx
         mx.set_memory_limit(int(q["worker_memory_gb"] * 1e9))
         mx.set_cache_limit(256 * 1024 * 1024)
@@ -112,6 +119,14 @@ def load(role, q):
 
 def execute(role, request, q):
     model = load(role, q)
+    if role == "legacy_asr":
+        kwargs = dict(language=request.get("language"), task=request["task"],
+                      initial_prompt=request.get("initial_prompt"), word_timestamps=True,
+                      condition_on_previous_text=False)
+        if q["asr_provider"] != "faster_whisper":
+            return primitive(model.transcribe(request["audio"], path_or_hf_repo=q["models"][role]["repo"], **kwargs))
+        iterator, info = model.transcribe(request["audio"], vad_filter=True, **kwargs)
+        return {"language":info.language,"segments":[primitive(row) for row in iterator]}
     if role in {"asr", "verifier"}:
         kwargs = {"beam_size": 3} if role == "asr" else {
             "language": request.get("language"), "max_tokens": 1024,
@@ -145,7 +160,7 @@ def execute(role, request, q):
             if len(tokenizer.encode(rendered)) + tokens > q["context_tokens"]:
                 raise ValueError("Prompt exceeds configured context budget; shorten scene context")
             result = generate(m, tokenizer, prompt=rendered, max_tokens=tokens,
-                              sampler=make_sampler(temp=.7, top_p=1.0), verbose=False)
+                              sampler=make_sampler(temp=request.get("temperature", .7), top_p=1.0), verbose=False)
             return {"text": str(result)}
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template

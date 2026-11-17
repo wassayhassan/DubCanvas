@@ -1,0 +1,74 @@
+name: Publish signed update
+on:
+  workflow_run:
+    workflows: [Backend boundary tests, SwiftUI shell build, Quality runtime dependency resolution, macOS app bundle]
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: signed-update-publisher
+  cancel-in-progress: false
+jobs:
+  gate:
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+      package_run: ${{ steps.gate.outputs.package_run }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
+          UPDATE_PUBLIC_KEY: ${{ vars.DUBCANVAS_UPDATE_PUBLIC_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          from macos.publish_update import successful_runs, run
+          if not os.environ.get('UPDATE_PUBLIC_KEY'):
+              print('::notice::Signed updates await release key configuration; publishing is disabled.')
+              raise SystemExit(0)
+          sha = os.environ['CANDIDATE_SHA']
+          repo = os.environ['GITHUB_REPOSITORY']
+          checks = successful_runs(repo, sha)
+          if checks and run('gh', 'api', f'repos/{repo}/commits/main', '--jq', '.sha') == sha:
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write(f"ready=true\npackage_run={checks['macOS app bundle']['id']}\n")
+          PY
+  publish:
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: macos-latest
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: DubCanvas-macOS-lightweight
+          path: dist
+          run-id: ${{ needs.gate.outputs.package_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements/release.txt
+      - name: Verify, sign and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DUBCANVAS_UPDATE_PRIVATE_KEY: ${{ secrets.DUBCANVAS_UPDATE_PRIVATE_KEY }}
+          CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          ditto -x -k dist/DubCanvas-build.zip dist
+          export GITHUB_SHA="$CANDIDATE_SHA"
+          python macos/publish_update.py

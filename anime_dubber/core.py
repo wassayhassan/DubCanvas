@@ -16,11 +16,10 @@ import urllib.error
 import urllib.request
 import uuid
 import wave
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from .languages import source_name, target_name
-from .prompts import render_prompt
 from urllib.parse import parse_qs, urlparse
 
 WHISPER_MODEL = "mlx-community/whisper-large-v3-mlx"
@@ -34,32 +33,7 @@ DIALOGUE_CROSSFADE = 0.10
 
 DEFAULT_CONTEXT = "Preserve names, intent, tone, and recurring terminology; use natural concise dialogue."
 
-DEFAULT_GLOSSARY: Dict[str, str] = {
-    "修为": "cultivation",
-    "灵根": "spiritual root",
-    "境界": "cultivation realm",
-    "天劫": "heavenly tribulation",
-    "渡劫": "undergo tribulation",
-    "宗主": "Sect Master",
-    "掌门": "Sect Leader",
-    "长老": "Elder",
-    "老祖": "Ancestor",
-    "丹田": "dantian",
-    "元神": "primordial spirit",
-    "法宝": "magical treasure",
-    "圣地": "sacred land",
-    "功法": "cultivation technique",
-    "灵气": "spiritual qi",
-    "神通": "divine ability",
-    "秘境": "secret realm",
-    "仙帝": "Immortal Emperor",
-    "大帝": "Great Emperor",
-    "天骄": "heavenly prodigy",
-    "丹药": "spirit pill",
-    "系统": "system",
-    "天墟圣殿": "Tianxu Holy Temple",
-    "胤天绝": "Yin Tianjue",
-}
+DEFAULT_GLOSSARY: Dict[str, str] = {}
 
 
 class PipelineError(RuntimeError):
@@ -167,7 +141,7 @@ class Config:
     demucs_device: str = "auto"  # auto|mps|cpu
     chunk_seconds: int = 120
     background_volume: float = 1.0
-    dub_volume: float = 1.15
+    dub_volume: float = 1.0
     ducking: bool = False
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
@@ -178,7 +152,15 @@ class Config:
     series_id: str = ""
     speaker_backend: str = "auto"  # auto|ecapa|acoustic
     review_before_dub: bool = True
-    review_model: str = "mlx-community/Qwen3-8B-4bit"
+    review_model: str = "mlx-community/Qwen3-14B-4bit"
+    asr_prompt: str = ""
+    asr_chunk_seconds: int = 30
+    timing_failure: str = "needs_review"
+    cloud_translation_url: str = ""
+    cloud_translation_model: str = ""
+    cloud_translation_api_key: str = ""
+    cloud_translation_consent: bool = False
+    elevenlabs_output_format: str = "pcm_24000"
     voice_overrides: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
 
@@ -453,14 +435,26 @@ def _atomic_json_write(path: Path, payload: object) -> None:
 
 
 def ffprobe_duration(path: Path, runner: CommandRunner) -> float:
-    cp = runner.run([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(path)
-    ])
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    if not hasattr(runner, "media_durations"):
+        runner.media_durations = {}
+    if key in runner.media_durations:
+        return runner.media_durations[key]
     try:
-        return float((cp.stdout or "").strip())
-    except ValueError as e:
-        raise PipelineError(f"Could not determine media duration for {path}") from e
+        with wave.open(str(path), "rb") as audio:
+            duration = audio.getnframes() / audio.getframerate()
+    except (wave.Error, EOFError):
+        cp = runner.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", str(path)])
+        try:
+            duration = float((cp.stdout or "").strip())
+        except ValueError as exc:
+            raise PipelineError(f"Could not determine media duration for {path}") from exc
+    if not math.isfinite(duration) or duration < 0:
+        raise PipelineError(f"Invalid media duration for {path}")
+    runner.media_durations[key] = duration
+    return duration
 
 
 def validate_media_streams(path: Path, runner: CommandRunner, *, require_video: bool = True) -> None:
@@ -687,243 +681,14 @@ def translation_is_usable(source_text: str, translated: str, source_language: st
     return not invalid.intersection(flags_for(cue, target, target_language, source_language))
 
 
-def translate_with_llm(
-    segments: List[Segment],
-    config: Config,
-    work_dir: Path,
-    runner: CommandRunner,
-    progress: ProgressCallback,
-) -> List[Segment]:
-    getattr(runner, "set_stage", lambda *_: None)("translating", "Translating subtitles")
-    target = target_name(config.target_language)
-    source = source_name(config.source_language)
-    signature_inputs = {
-        "quality_revision": 2,
-        "model": config.llm_model,
-        "target_language": config.target_language,
-        "context": config.context,
-        "glossary": config.glossary,
-        "source_text": [s.text for s in segments],
-    }
-    if config.source_language != "zh":
-        signature_inputs["source_language"] = config.source_language
-    translation_signature = hashlib.sha1(json.dumps(
-        signature_inputs, ensure_ascii=False, sort_keys=True
-    ).encode("utf-8")).hexdigest()[:12]
-    cache_path = work_dir / f"translations_llm_{translation_signature}.json"
-    cache: Dict[str, str] = {}
-    if config.resume and not config.force:
-        if cache_path.exists():
-            try:
-                loaded = json.loads(cache_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    cache = {str(i): value for i, value in loaded.items()
-                             if str(i).isdigit() and int(i) < len(segments)
-                             and isinstance(value, str)
-                             and translation_is_usable(segments[int(i)].text, value,
-                                                       config.source_language, config.target_language)}
-            except (ValueError, OSError):
-                pass
-
-    pending = [i for i, s in enumerate(segments) if str(i) not in cache]
-    if not pending:
-        for i, seg in enumerate(segments):
-            seg.translated = cache.get(str(i), "")
-        return segments
-
-    try:
-        from mlx_lm import generate, load
-    except Exception as e:
-        raise PipelineError("mlx-lm is not installed correctly. Re-run setup.sh") from e
-
-    progress(f"Loading translation LLM: {config.llm_model}")
-    runner.check_cancel()
-    model, tokenizer = load(config.llm_model)
-
-    def generate_text(prompt: str, max_tokens: int = 2200) -> str:
-        rendered = render_prompt(tokenizer, prompt)
-        response = generate(model, tokenizer, prompt=rendered, max_tokens=max_tokens, verbose=False)
-        return _response_text(response)
-
-    batch_size = 12
-    gl = glossary_string(config.glossary)
-    done = 0
-    total = len(pending)
-    for off in range(0, len(pending), batch_size):
-        runner.check_cancel()
-        ids = pending[off:off + batch_size]
-        payload = [{"id": i, "text": segments[i].text} for i in ids]
-        prompt = (
-            f"Translate the following {source} dialogue into natural concise {target}.\n"
-            "Rules:\n"
-            f"1. Return ONLY a JSON array of objects with exactly the same ids, each shaped {{\"id\": number, \"text\": \"{target}\"}}.\n"
-            "2. Do not omit, merge, summarize, explain, or add dialogue.\n"
-            "3. Keep proper names and recurring terminology consistent.\n"
-            f"4. Prefer short spoken {target} so dubbing can fit the original timing.\n"
-            f"Context: {config.context}\n"
-            f"Glossary: {gl}\n"
-            f"Input: {json.dumps(payload, ensure_ascii=False)}"
-        )
-        parsed: Dict[int, str] = {}
-        for attempt in range(3):
-            text = generate_text(prompt)
-            for i, value in parse_translation_response(text, ids).items():
-                if i not in parsed and translation_is_usable(segments[i].text, value,
-                                                             config.source_language, config.target_language):
-                    parsed[i] = value
-            if len(parsed) == len(ids):
-                break
-            missing_ids = [i for i in ids if i not in parsed]
-            prompt += ("\nYour previous response missed or mistranslated these IDs: "
-                       f"{missing_ids}. Return the exact requested JSON array; do not copy the source.")
-
-        missing = [i for i in ids if i not in parsed]
-        for i in missing:
-            one_prompt = (
-                f"Translate this {source} dialogue into concise natural {target}. Return ONLY the translation, no quotes or explanation.\n"
-                f"Context: {config.context}\nGlossary: {gl}\n{source}: {segments[i].text}"
-            )
-            for _ in range(2):
-                raw = generate_text(one_prompt, max_tokens=256).strip()
-                value = re.sub(r"^```.*?\n|\n```$", "", raw, flags=re.S).strip().strip('"')
-                if translation_is_usable(segments[i].text, value,
-                                         config.source_language, config.target_language):
-                    parsed[i] = value
-                    break
-                one_prompt += f"\nYour previous answer was invalid. Write only {target}; do not copy the source."
-            if i not in parsed:
-                raise PipelineError(f"Translation failed for line {i + 1}. The source subtitles are saved. "
-                                    "Retry with a stronger translation model; no incorrect dub will be generated.")
-
-        for i in ids:
-            cache[str(i)] = parsed[i]
-            segments[i].translated = cache[str(i)]
-        _atomic_json_write(cache_path, cache)
-        done += len(ids)
-        progress(f"LLM translation: {min(done, total)}/{total} lines")
-    return segments
+def translate_with_llm(segments, config, work_dir, runner, progress):
+    from .translation import translate
+    return translate(segments, config, work_dir, runner, progress, "llm")
 
 
-def translate_with_ollama_provider(
-    segments: List[Segment],
-    config: Config,
-    work_dir: Path,
-    runner: CommandRunner,
-    progress: ProgressCallback,
-) -> List[Segment]:
-    getattr(runner, "set_stage", lambda *_: None)("translating", "Translating subtitles")
-    target = target_name(config.target_language)
-    source = source_name(config.source_language)
-    from .providers.translation import translate_with_ollama
-
-    signature_inputs = {
-        "quality_revision": 2,
-        "provider": "ollama",
-        "target_language": config.target_language,
-        "model": config.ollama_model,
-        "url": config.ollama_url,
-        "context": config.context,
-        "glossary": config.glossary,
-        "source_text": [s.text for s in segments],
-    }
-    if config.source_language != "zh":
-        signature_inputs["source_language"] = config.source_language
-    translation_signature = hashlib.sha1(json.dumps(
-        signature_inputs, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-    cache_path = work_dir / f"translations_ollama_{translation_signature}.json"
-    cache: Dict[str, str] = {}
-    if config.resume and cache_path.exists() and not config.force:
-        try:
-            loaded = json.loads(cache_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                cache = {str(i): value for i, value in loaded.items()
-                         if str(i).isdigit() and int(i) < len(segments)
-                         and isinstance(value, str)
-                         and translation_is_usable(segments[int(i)].text, value,
-                                                   config.source_language, config.target_language)}
-        except Exception:
-            cache = {}
-
-    pending = [i for i, seg in enumerate(segments) if str(i) not in cache]
-    if not pending:
-        for i, seg in enumerate(segments):
-            seg.translated = cache.get(str(i), "")
-        return segments
-
-    progress(f"Using Ollama translation model: {config.ollama_model}")
-    gl = glossary_string(config.glossary)
-    batch_size = 12
-    batches = []
-    for off in range(0, len(pending), batch_size):
-        ids = pending[off:off + batch_size]
-        payload = [{"id": i, "text": segments[i].text} for i in ids]
-        prompt = (
-            f"Translate the following {source} dialogue into natural concise {target}.\n"
-            "Rules:\n"
-            "1. Return ONLY a JSON array of objects with exactly the same ids, each shaped "
-            f"{{\"id\": number, \"text\": \"{target}\"}}.\n"
-            "2. Do not omit, merge, summarize, explain, or add dialogue.\n"
-            "3. Keep proper names and recurring terminology consistent.\n"
-            f"4. Prefer short spoken {target} so dubbing can fit the original timing.\n"
-            f"Context: {config.context}\n"
-            f"Glossary: {gl}\n"
-            f"Input: {json.dumps(payload, ensure_ascii=False)}"
-        )
-        batches.append((ids, prompt))
-
-    def single_prompt(idx: int) -> str:
-        return (
-            f"Translate this {source} dialogue into concise natural {target}. "
-            "Return ONLY the translation, no quotes or explanation.\n"
-            f"Context: {config.context}\n"
-            f"Glossary: {gl}\n"
-            f"{source}: {segments[idx].text}"
-        )
-
-    def save_batch(ids: List[int], values: Dict[int, str]) -> None:
-        for idx in ids:
-            value = values.get(idx, "")
-            if translation_is_usable(segments[idx].text, value,
-                                     config.source_language, config.target_language):
-                cache[str(idx)] = value
-        _atomic_json_write(cache_path, cache)
-
-    try:
-        translated = translate_with_ollama(
-            batches=batches,
-            base_url=config.ollama_url,
-            model=config.ollama_model,
-            parse_batch=parse_translation_response,
-            single_prompt=single_prompt,
-            cancel_check=runner.check_cancel,
-            progress=progress,
-            on_batch=save_batch,
-        )
-    except CancelledError:
-        raise
-    except Exception as e:
-        raise PipelineError(str(e)) from e
-
-    for idx in pending:
-        value = translated.get(idx, "")
-        if not translation_is_usable(segments[idx].text, value,
-                                     config.source_language, config.target_language):
-            from .providers.translation import ollama_generate
-            for _ in range(2):
-                runner.check_cancel()
-                value = ollama_generate(base_url=config.ollama_url, model=config.ollama_model,
-                                        prompt=single_prompt(idx) +
-                                        f"\nWrite only {target}; do not copy the {source} source.", timeout=180).strip().strip('"')
-                if translation_is_usable(segments[idx].text, value,
-                                         config.source_language, config.target_language):
-                    break
-            else:
-                raise PipelineError(f"Translation failed for line {idx + 1}. The source subtitles are saved. "
-                                    "Retry with a stronger translation model; no incorrect dub will be generated.")
-        cache[str(idx)] = value
-        segments[idx].translated = value
-    _atomic_json_write(cache_path, cache)
-    return segments
+def translate_with_ollama_provider(segments, config, work_dir, runner, progress):
+    from .translation import translate
+    return translate(segments, config, work_dir, runner, progress, "ollama")
 
 
 def _precise_row_bounds(row: dict) -> Tuple[float, float]:
@@ -965,7 +730,7 @@ def validate_transcript_content(segments: List[Segment]) -> None:
     repeat. Retry this narrow pattern as a whole instead of deleting cues.
     """
     texts = [re.sub(r"\s+", " ", s.text).strip().casefold() for s in segments if s.text.strip()]
-    credits = [text for text in texts if re.search(r"©|\bcopyright\b|\ball rights reserved\b", text)]
+    credits = [text for text in texts if re.search(r"©|\bcopyright\b|\ball rights reserved\b|amara\.org|字幕.*(?:提供|制作)|(?:点赞|訂閱|订阅|subscribe).*(?:关注|分享|like|channel)", text)]
     if credits:
         repeated = max(credits.count(text) for text in set(credits))
         if repeated >= 3 and repeated / len(texts) >= 0.75:
@@ -1007,12 +772,13 @@ def transcribe_audio(
     progress: ProgressCallback,
     *,
     task: str = "transcribe",
+    fallback_audio: Optional[Path] = None,
 ) -> List[Segment]:
     from .providers.asr import resolve_asr_provider
 
-    getattr(runner, "set_stage", lambda *_: None)("transcribing" if task == "transcribe" else "translating", "Recognizing speech" if task == "transcribe" else "Translating speech")
+    runner.set_stage("transcribing" if task == "transcribe" else "translating", "Recognizing speech" if task == "transcribe" else "Translating speech")
     provider = resolve_asr_provider(config.asr_provider)
-    getattr(runner, "diagnostic", lambda *_, **__: None)("Transcription input", audio=str(audio), task=task, requested_language=config.source_language,
+    runner.diagnostic("Transcription input", audio=str(audio), task=task, requested_language=config.source_language,
                       provider=provider, model=config.faster_whisper_model if provider == "faster_whisper" else config.mlx_whisper_model,
                       bytes=audio.stat().st_size if audio.is_file() else None, audio_summary=audio_diagnostic_summary(audio))
     requested_language = config.source_language.lower()
@@ -1024,14 +790,17 @@ def transcribe_audio(
             pass
     language_tag = config.source_language if task == "transcribe" else "en"
     cache_name = (
-        f"transcript_{language_tag}_{provider}_v5_precise.json"
+        f"transcript_{language_tag}_{provider}_v6_precise.json"
         if task == "transcribe"
-        else f"transcript_en_{provider}_v5_precise.json"
+        else f"transcript_en_{provider}_v6_precise.json"
     )
     selected_model = config.faster_whisper_model if provider == "faster_whisper" else config.mlx_whisper_model
     if selected_model != ("large-v3" if provider == "faster_whisper" else WHISPER_MODEL):
         model_tag = hashlib.sha1(selected_model.encode("utf-8")).hexdigest()[:8]
-        cache_name = cache_name.replace("_v5_precise", f"_{model_tag}_v5_precise")
+        cache_name = cache_name.replace("_v6_precise", f"_{model_tag}_v6_precise")
+    if config.asr_prompt or config.glossary:
+        prompt_key = hashlib.sha256(json.dumps([config.asr_prompt, config.glossary], sort_keys=True).encode()).hexdigest()[:12]
+        cache_name = cache_name.replace(".json", f"_{prompt_key}.json")
     cache = work_dir / cache_name
     legacy_cache = work_dir / (
         "transcript_zh_v3.json" if task == "transcribe" else "transcript_en_whisper_v3.json"
@@ -1074,7 +843,7 @@ def transcribe_audio(
             if not cleaned:
                 raise ValueError("No usable transcript segments")
             validate_transcript_content(cleaned)
-            getattr(runner, "diagnostic", lambda *_, **__: None)("Transcript cache reused", cache=str(cache_to_read), cues=len(cleaned))
+            runner.diagnostic("Transcript cache reused", cache=str(cache_to_read), cues=len(cleaned))
             if len(cleaned) != len(raw_cached) or any(
                 abs(a.start - b.start) > 1e-6 or abs(a.end - b.end) > 1e-6 or a.text != b.text
                 for a, b in zip(cleaned, raw_cached)
@@ -1087,17 +856,25 @@ def transcribe_audio(
             return cleaned
         except (ValueError, TypeError, KeyError, OSError, TranscriptionQualityError):
             progress("Transcript cache was incomplete; rebuilding this stage…")
-    initial_prompt = (
-        "玄幻 修仙 系统 天墟圣殿 胤天绝 修为 灵根 境界 宗主 掌门 长老 老祖 天劫 丹田 元神 法宝"
-        if task == "transcribe" and config.source_language == "zh" else None
-    )
+    initial_prompt = (config.asr_prompt or " ".join(config.glossary)) if task == "transcribe" else None
     detected_language = None
     def note_language(value: str) -> None:
         nonlocal detected_language
         detected_language = value.lower()
     runner.check_cancel()
 
-    if provider == "mlx_whisper":
+    try:
+        import soundfile as sf
+        chunkable = sf.info(str(audio)).duration > 0
+    except (OSError, RuntimeError):
+        chunkable = False
+    if chunkable:
+        from .asr_chunks import transcribe_chunks
+        result = transcribe_chunks(audio, replace(config, asr_provider=provider), work_dir, runner,
+                                   progress, task, fallback_audio)
+        provider_rows = result["segments"]
+        note_language(str(result.get("language") or config.source_language))
+    elif provider == "mlx_whisper":
         try:
             import mlx_whisper
         except Exception as e:
@@ -1117,6 +894,7 @@ def transcribe_audio(
             task=task,
             initial_prompt=initial_prompt,
             word_timestamps=True,
+            condition_on_previous_text=False,
         )
         provider_rows = result.get("segments", [])
         note_language(str(result.get("language") or config.source_language))
@@ -1158,7 +936,7 @@ def transcribe_audio(
         precise_start, precise_end = _precise_row_bounds(x)
         raw_segs.append(Segment(precise_start, precise_end, text))
     segs = sanitize_segments(raw_segs)
-    getattr(runner, "diagnostic", lambda *_, **__: None)("Recognition output", detected_language=detected_language, raw_cues=len(raw_segs),
+    runner.diagnostic("Recognition output", detected_language=detected_language, raw_cues=len(raw_segs),
                       usable_cues=len(segs), speech_seconds=round(sum(s.end - s.start for s in segs), 3),
                       first_cues=[s.to_dict() for s in segs[:5]],
                       confidence=[{key: row.get(key) for key in ("avg_logprob", "no_speech_prob", "compression_ratio")}
@@ -1208,7 +986,7 @@ def _locate_downloaded_source(work_dir: Path, stdout: str = "") -> Optional[Path
 
 
 def download_source(source: str, work_dir: Path, runner: CommandRunner, progress: ProgressCallback) -> Path:
-    getattr(runner, "set_stage", lambda *_: None)("downloading" if is_url(source) else "validating_source", "Checking source video")
+    runner.set_stage("downloading" if is_url(source) else "validating_source", "Checking source video")
     if not is_url(source):
         p = Path(source).expanduser().resolve()
         if not p.exists():
@@ -1329,7 +1107,7 @@ def download_source(source: str, work_dir: Path, runner: CommandRunner, progress
 
 
 def extract_audio(video: Path, work_dir: Path, runner: CommandRunner, progress: ProgressCallback, config: Config) -> Path:
-    getattr(runner, "set_stage", lambda *_: None)("extracting_audio", "Extracting source audio")
+    runner.set_stage("extracting_audio", "Extracting source audio")
     validate_media_streams(video, runner)
     audio = work_dir / "original.wav"
     if config.resume and _complete_wav(audio) and not config.force:
@@ -1356,12 +1134,16 @@ def separate_dialogue(
     runner: CommandRunner,
     progress: ProgressCallback,
     config: Config,
+    *, windowed: bool = True,
 ) -> Tuple[Path, Path]:
-    getattr(runner, "set_stage", lambda *_: None)("separating_stems", "Separating dialogue and background")
+    runner.set_stage("separating_stems", "Separating dialogue and background")
     stems_dir = work_dir / "stems"
     vocals = _find_stem(stems_dir, "vocals.wav")
     bg = _find_stem(stems_dir, "no_vocals.wav")
     audio_seconds = ffprobe_duration(audio, runner)
+    if windowed and audio_seconds > max(30, min(300, config.chunk_seconds)) + .05:
+        from .separation import separate_windows
+        return separate_windows(audio, work_dir, runner, progress, config)
     if (config.resume and vocals and bg and not config.force
             and _complete_wav(vocals, minimum_seconds=audio_seconds * .98)
             and _complete_wav(bg, minimum_seconds=audio_seconds * .98)):
@@ -1401,7 +1183,7 @@ def separate_dialogue(
             "-o", str(stems_dir),
             str(audio),
         ]
-        cp = runner.run(cmd, capture=True, check=False)
+        cp = runner.run_stream(cmd, line_callback=progress, check=False)
         if cp.returncode == 0:
             vocals = _find_stem(stems_dir, "vocals.wav")
             bg = _find_stem(stems_dir, "no_vocals.wav")
@@ -1459,56 +1241,61 @@ def synthesize_macos(
             pass
 
 
-def synthesize_elevenlabs(
-    text: str,
-    out_mp3: Path,
-    config: Config,
-    runner: CommandRunner,
-) -> None:
+def synthesize_elevenlabs(text, out_mp3, config, runner):
     key = config.elevenlabs_api_key.strip() or os.getenv("ELEVENLABS_API_KEY", "").strip()
-    if not key:
-        raise PipelineError("ElevenLabs selected but no API key was supplied. Set ELEVENLABS_API_KEY or enter it in the GUI.")
-    if not config.elevenlabs_voice_id.strip():
-        raise PipelineError("ElevenLabs requires a voice ID")
-    url = (
-        "https://api.elevenlabs.io/v1/text-to-speech/"
-        + config.elevenlabs_voice_id.strip()
-        + "?output_format=mp3_44100_128"
-    )
-    payload = json.dumps({
-        "text": text,
-        "model_id": config.elevenlabs_model_id,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "xi-api-key": key,
-            "Content-Type": "application/json",
-            "Accept": "audio/mpeg",
-        },
-        method="POST",
-    )
-    last_error = None
+    if not key or not config.elevenlabs_voice_id.strip():
+        raise PipelineError("ElevenLabs requires an API key and voice ID")
+    output_format = config.elevenlabs_output_format
+    if output_format not in {"pcm_24000", "mp3_44100_128"}:
+        raise PipelineError("Unsupported ElevenLabs output format")
+    payload = json.dumps({"text": text, "model_id": config.elevenlabs_model_id}).encode()
     for attempt in range(5):
         runner.check_cancel()
+        request = urllib.request.Request(
+            "https://api.elevenlabs.io/v1/text-to-speech/" + config.elevenlabs_voice_id.strip()
+            + "?output_format=" + output_format, data=payload, method="POST",
+            headers={"xi-api-key": key, "Content-Type": "application/json", "Accept": "application/octet-stream"})
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                out_mp3.write_bytes(resp.read())
+            with urllib.request.urlopen(request, timeout=120) as response:
+                data = response.read()
+            if output_format.startswith("pcm_"):
+                if not data or len(data) % 2: raise PipelineError("Invalid ElevenLabs PCM response")
+                with wave.open(str(out_mp3), "wb") as audio:
+                    audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(24000); audio.writeframes(data)
+            else:
+                temporary = out_mp3.with_suffix(".download.mp3")
+                try:
+                    temporary.write_bytes(data)
+                    runner.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(temporary),
+                                "-c:a", "pcm_s16le", str(out_mp3)])
+                finally: temporary.unlink(missing_ok=True)
             return
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", "replace")[-1200:]
-            last_error = f"HTTP {e.code}: {body}"
-            if e.code == 429 and attempt < 4:
-                time.sleep(2 ** attempt)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")[-1200:]
+            if output_format.startswith("pcm_") and exc.code in {400,403} and any(
+                    word in body.lower() for word in ("output_format", "subscription", "tier", "format")):
+                output_format = "mp3_44100_128"
+                runner.progress("PCM unavailable on this plan; requesting MP3 fallback")
                 continue
-            raise PipelineError(f"ElevenLabs request failed: {last_error}") from e
-        except Exception as e:
-            last_error = str(e)
-            if attempt < 4:
-                time.sleep(2 ** attempt)
-                continue
-            raise PipelineError(f"ElevenLabs request failed: {last_error}") from e
+            if exc.code != 429 and not 500 <= exc.code < 600:
+                raise PipelineError(f"ElevenLabs request failed: HTTP {exc.code}: {body}") from exc
+            if attempt == 4: raise PipelineError(f"ElevenLabs unavailable: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            if attempt == 4: raise PipelineError(f"ElevenLabs unavailable: {exc}") from exc
+        deadline = time.monotonic() + 2**attempt
+        while time.monotonic() < deadline:
+            runner.check_cancel(); time.sleep(.1)
+    raise PipelineError("ElevenLabs could not provide audio")
+
+
+def _stretch_filters(tempo, pitch, runner):
+    if not hasattr(runner, "has_rubberband_filter"):
+        reply = runner.run(["ffmpeg", "-hide_banner", "-filters"], check=False)
+        runner.has_rubberband_filter = "rubberband" in (reply.stdout or "")
+    if runner.has_rubberband_filter:
+        return [f"rubberband=tempo={tempo:.8f}:pitch={2**(pitch/12):.8f}"]
+    # Cross-platform fallback when FFmpeg lacks the optional filter.
+    return _pitch_filters(pitch) + ([atempo_chain(tempo)] if tempo > 1 else [])
 
 
 def _pitch_filters(semitones: float) -> List[str]:
@@ -1556,7 +1343,7 @@ def prepare_tts_clip(
     next_start: Optional[float] = None,
     max_tempo: float = 1.0,
 ) -> Path:
-    getattr(runner, "set_stage", lambda *_: None)("synthesizing", "Generating dub voices")
+    runner.set_stage("synthesizing", "Generating dub voices")
     text = (seg.translated or seg.text).strip()
     if not text:
         raise PipelineError(f"Empty translated text for segment {index}")
@@ -1569,11 +1356,11 @@ def prepare_tts_clip(
     if style == "shouting":
         base_rate = int(base_rate * 1.05)
         pitch += 0.7
-        gain *= 1.30
+        # Level is matched to source vocals after synthesis.
     elif style == "whispering":
         base_rate = int(base_rate * 0.92)
         pitch -= 0.25
-        gain *= 0.64
+        # Whispering tone is retained without an arbitrary level reduction.
 
     eleven_voice = str(profile.get("elevenlabs_voice_id", "") or config.elevenlabs_voice_id)
     chatterbox_reference = _chatterbox_reference(profile, config)
@@ -1647,7 +1434,7 @@ def prepare_tts_clip(
         max_tempo = min(max_tempo, 1.5 / native_acceleration)
 
     signature_data = {
-        "processing_version": 4,
+        "processing_version": 5,
         "max_tempo": round(max_tempo, 3),
         "next_start": round(next_start, 3) if next_start is not None else None,
         "text": text,
@@ -1685,6 +1472,12 @@ def prepare_tts_clip(
         signature_data["kokoro_voice"] = kokoro_voice
         signature_data["kokoro_language"] = config.kokoro_language
 
+    # Synthesis never depends on the timeline, pitch, gain, or repair tempo.
+    raw_signature_data = {key: value for key, value in signature_data.items()
+                          if key not in {"max_tempo", "next_start", "timing", "pitch", "gain"}}
+    raw_signature = hashlib.sha256(json.dumps(raw_signature_data, sort_keys=True,
+                                             ensure_ascii=False).encode()).hexdigest()[:24]
+    signature_data["source_rms"] = profile.get("source_rms")
     clip_signature = hashlib.sha1(
         json.dumps(signature_data, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()[:12]
@@ -1696,13 +1489,15 @@ def prepare_tts_clip(
         return wav
     tts_dir.mkdir(parents=True, exist_ok=True)
 
-    suffix = ".aiff" if resolved_tts == "macos" else (".mp3" if resolved_tts == "elevenlabs" else ".wav")
-    source_audio = tts_dir / f"{index:06d}_{clip_signature}{suffix}"
-    raw_audio = source_audio
+    suffix = ".aiff" if resolved_tts == "macos" else ".wav"
+    source_audio = tts_dir / f"raw_{raw_signature}{suffix}"
     rendering = tts_dir / f"{index:06d}_{clip_signature}_rendering.wav"
-    speech_audio = tts_dir / f"{index:06d}_{clip_signature}_speech.wav"
+    speech_audio = tts_dir / f"raw_{raw_signature}_speech.wav"
 
-    if config.resume and source_audio.is_file() and source_audio.stat().st_size > 1000 and not config.force:
+    if not hasattr(runner, "synthesized_sources"):
+        runner.synthesized_sources = set()
+    can_reuse_raw = (config.resume and not config.force) or source_audio in runner.synthesized_sources
+    if can_reuse_raw and source_audio.is_file() and source_audio.stat().st_size > 1000:
         try:
             valid_source = ffprobe_duration(source_audio, runner) > 0.05
         except PipelineError:
@@ -1710,101 +1505,57 @@ def prepare_tts_clip(
     else:
         valid_source = False
 
-    getattr(runner, "diagnostic", lambda *_, **__: None)("Voice synthesis", line=index + 1, speaker=seg.speaker_id, provider=resolved_tts,
+    runner.diagnostic("Voice synthesis", line=index + 1, speaker=seg.speaker_id, provider=resolved_tts,
                       reference=chatterbox_reference, american_english=american_english,
                       text=text, window=[seg.start, seg.end], next_start=next_start, reused=valid_source)
     if valid_source:
         progress(f"Reusing generated voice for line {index + 1}")
-    elif resolved_tts == "chatterbox":
-        from .providers.tts import synthesize_chatterbox
-        try:
-            synthesize_chatterbox(
-                text,
-                source_audio,
-                reference_audio=chatterbox_reference,
-                expressiveness=chatterbox_expressiveness,
-                device=config.chatterbox_device,
-                turbo=bool(config.chatterbox_turbo),
-                american_english=american_english,
-                cancel_check=runner.check_cancel,
-            )
-        except Exception as e:
-            raise PipelineError(str(e)) from e
-    elif resolved_tts == "chatterbox_multilingual":
-        from .providers.tts import synthesize_multilingual_chatterbox
-        try:
-            synthesize_multilingual_chatterbox(
-                text, source_audio, language=config.target_language,
-                reference_audio=chatterbox_reference,
-                expressiveness=chatterbox_expressiveness,
-                device=config.chatterbox_device, cancel_check=runner.check_cancel,
-            )
-        except Exception as e:
-            raise PipelineError(str(e)) from e
-    elif resolved_tts == "kokoro":
-        from .providers.tts import synthesize_kokoro
-        try:
-            synthesize_kokoro(
-                text,
-                source_audio,
-                voice=kokoro_voice,
-                rate=base_rate,
-                lang_code=config.kokoro_language,
-                cancel_check=runner.check_cancel,
-            )
-        except Exception as e:
-            raise PipelineError(str(e)) from e
-    elif resolved_tts == "macos":
-        synthesize_macos(text, source_audio, config, runner, voice=chosen_voice, rate=base_rate)
-    elif resolved_tts == "piper":
-        from .providers.tts import synthesize_piper
-        try:
-            synthesize_piper(
-                text,
-                source_audio,
-                model_path=config.piper_model,
-                rate=base_rate,
-                speaker=(config.piper_speaker if config.piper_speaker >= 0 else None),
-                cancel_check=runner.check_cancel,
-            )
-        except Exception as e:
-            raise PipelineError(str(e)) from e
-    elif resolved_tts == "elevenlabs":
-        old = config.elevenlabs_voice_id
-        config.elevenlabs_voice_id = eleven_voice
-        try:
-            synthesize_elevenlabs(text, source_audio, config, runner)
-        finally:
-            config.elevenlabs_voice_id = old
     else:
-        raise PipelineError(f"Unsupported TTS engine: {resolved_tts}")
+        from .providers.synthesis import synthesize
+        pending_source = source_audio.with_name(source_audio.stem + ".partial" + source_audio.suffix)
+        try:
+            synthesize(resolved_tts, text, pending_source, config, runner,
+                       {"reference": chatterbox_reference, "expressiveness": chatterbox_expressiveness,
+                        "american_english": american_english, "kokoro": kokoro_voice,
+                        "macos": chosen_voice, "elevenlabs": eleven_voice, "rate": base_rate})
+            if ffprobe_duration(pending_source, runner) <= .005:
+                raise PipelineError(f"TTS returned empty speech for line {index+1}")
+            pending_source.replace(source_audio)
+            runner.synthesized_sources.add(source_audio)
+        finally:
+            pending_source.unlink(missing_ok=True)
 
     # TTS can leave a long silent tail. Timing against the whole file can
     # make even a short utterance appear to need several times playback speed.
-    runner.run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source_audio),
-        "-af", "silenceremove=start_periods=1:start_silence=0.005:start_threshold=-55dB,"
-               "areverse,silenceremove=start_periods=1:start_silence=0.08:"
-               "start_threshold=-55dB,areverse",
-        "-ac", "2", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(speech_audio),
-    ])
+    if not valid_source or not _complete_wav(speech_audio):
+        runner.run([
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source_audio),
+            "-af", "silenceremove=start_periods=1:start_silence=0.005:start_threshold=-55dB,"
+                   "areverse,silenceremove=start_periods=1:start_silence=0.08:"
+                   "start_threshold=-55dB,areverse",
+            "-ac", "2", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(speech_audio),
+        ])
     try:
         source_dur = ffprobe_duration(speech_audio, runner)
     except PipelineError:
         source_dur = 0.0
     if source_dur <= 0.005:
         progress(f"Warning: silence trimming removed line {index + 1}; using original voice audio")
-        speech_audio.unlink(missing_ok=True)
         source_dur = max(0.05, ffprobe_duration(source_audio, runner))
     else:
         source_audio = speech_audio
+    source_rms = float(profile.get("source_rms", 0.0))
+    if source_rms > 1e-5:
+        from .audio_analysis import window_rms
+        voice_rms = window_rms(source_audio, 0, source_dur)
+        if voice_rms > 1e-5:
+            gain *= max(.25, min(4.0, source_rms / voice_rms))
     available = max(0.0, next_start - seg.start) if next_start is not None else None
     tempo = min(max_tempo, 1.5) if available is None else 1.0
     if available is not None and source_dur > available + 0.03:
         if max_tempo > 1.0 and available > 0:
             tempo = min(max_tempo, 1.5, source_dur / max(0.001, available - 0.015))
         if tempo <= 1.0 or source_dur / tempo > available + 0.03:
-            speech_audio.unlink(missing_ok=True)
             raise TimingOverlapError(index, source_dur, available, text)
         progress(f"Speeding line {index + 1} to {tempo:.2f}× to fit the next voice")
     if source_dur > seg.end - seg.start + 0.08:
@@ -1816,9 +1567,16 @@ def prepare_tts_clip(
         "silenceremove=start_periods=1:start_silence=0.005:start_threshold=-55dB",
         "afade=t=in:st=0:d=0.012",
     ]
-    filters.extend(_pitch_filters(pitch))
-    if tempo > 1.0:
-        filters.append(atempo_chain(tempo))
+    render_tempo = tempo
+    stretched = None
+    stretch = _stretch_filters(tempo, pitch, runner)
+    if not runner.has_rubberband_filter and shutil.which("rubberband") and (tempo != 1 or abs(pitch) > .05):
+        stretched = tts_dir / f"{index:06d}_{clip_signature}_stretch.wav"
+        runner.run(["rubberband", "-3", "-T", str(tempo), "-p", str(pitch), str(source_audio), str(stretched)])
+        source_audio = stretched
+        render_tempo = 1.0
+    else:
+        filters.extend(stretch)
     if style == "shouting":
         filters += ["acompressor=threshold=0.125:ratio=3:attack=5:release=90"]
     elif style == "whispering":
@@ -1848,7 +1606,7 @@ def prepare_tts_clip(
             safe_filters = [
                 "silenceremove=start_periods=1:start_silence=0.005:start_threshold=-55dB",
                 "afade=t=in:st=0:d=0.012",
-                *([atempo_chain(tempo)] if tempo > 1.0 else []),
+                *([atempo_chain(render_tempo)] if render_tempo > 1.0 else []),
                 f"volume={max(0.1, min(3.0, gain)):.4f}",
                 f"aresample={SAMPLE_RATE}",
                 "aformat=sample_fmts=s16:channel_layouts=stereo",
@@ -1868,9 +1626,9 @@ def prepare_tts_clip(
         rendering.replace(wav)
     finally:
         rendering.unlink(missing_ok=True)
-        speech_audio.unlink(missing_ok=True)
 
-    raw_audio.unlink(missing_ok=True)
+    if stretched is not None:
+        stretched.unlink(missing_ok=True)
     return wav
 
 def _clips_overlapping(
@@ -1900,7 +1658,7 @@ def render_dub_timeline(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> Path:
-    getattr(runner, "set_stage", lambda *_: None)("mixing", "Rendering the dub timeline")
+    runner.set_stage("mixing", "Rendering the dub timeline")
     timeline_signature = hashlib.sha1(json.dumps({
         "segments": [[round(s.start, 3), round(s.end, 3), str(p), p.stat().st_size,
                       p.stat().st_mtime_ns] for s, p in zip(segments, clips)],
@@ -2022,121 +1780,22 @@ def _merge_dialogue_guard_intervals(
     return [(a, b) for a, b in merged]
 
 
-def build_dialogue_safe_background(
-    original: Path,
-    separated_background: Path,
-    segments: Sequence[Segment],
-    total_duration: float,
-    work_dir: Path,
-    config: Config,
-    runner: CommandRunner,
-    progress: ProgressCallback,
-) -> Path:
-    """Keep the untouched original soundtrack outside dialogue and use Demucs
-    only around spoken regions.
-
-    Demucs is a music-source separator, not a dialogue extractor. Using its
-    no_vocals stem for an entire episode can remove score/SFX it misclassifies as
-    vocal content. This hybrid bed restores the original music/SFX between lines
-    while still suppressing the source-language dialogue around speech.
-    """
-    intervals = _merge_dialogue_guard_intervals(segments, total_duration)
-    signature = hashlib.sha1(json.dumps({
-        "original": [original.name, original.stat().st_size],
-        "separated": [separated_background.name, separated_background.stat().st_size],
-        "intervals": [[round(a, 3), round(b, 3)] for a, b in intervals],
-        "chunk_seconds": int(config.chunk_seconds),
-        "guard": [DIALOGUE_GUARD_PRE, DIALOGUE_GUARD_POST],
-        "gap_and_crossfade": [DIALOGUE_GUARD_GAP, DIALOGUE_CROSSFADE],
-    }, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+def build_dialogue_safe_background(original, separated_background, segments, total_duration,
+                                   work_dir, config, runner, progress, *, vocals=None):
+    from .audio_analysis import analyze_vocals, fingerprint, merge_intervals, blend_background
+    intervals = [(seg.start, seg.end) for seg in segments]
+    if vocals is not None:
+        intervals += analyze_vocals(vocals, work_dir, runner, force=config.force)
+    # Keep ASR regions as a conservative union; VAD additionally catches
+    # untranscribed shouts, interjections, singing and crowd vocals.
+    intervals = merge_intervals(intervals, total_duration, padding=.42, gap=.7)
+    signature = hashlib.sha256(json.dumps([3, fingerprint(original), fingerprint(separated_background),
+                                           intervals, total_duration]).encode()).hexdigest()[:20]
     out = work_dir / f"background_bed_{signature}.wav"
-    if config.resume and _complete_wav(out, minimum_seconds=total_duration * .98) and not config.force:
+    if config.resume and not config.force and _complete_wav(out, minimum_seconds=total_duration*.98):
         return out
+    return blend_background(original, separated_background, intervals, out, total_duration, runner, progress)
 
-    if not intervals:
-        progress("No dialogue regions found; using original soundtrack as background…")
-        _atomic_media_run(runner, [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(original), "-ac", "2", "-ar", str(SAMPLE_RATE),
-            "-c:a", "pcm_s16le", str(out),
-        ], out)
-        return out
-
-    progress("Restoring original music/SFX outside dialogue and suppressing source voices around speech…")
-    chunk_seconds = max(30, int(config.chunk_seconds))
-    chunk_dir = work_dir / f"background_chunks_{signature}"
-    if chunk_dir.exists() and config.force:
-        shutil.rmtree(chunk_dir)
-    chunk_dir.mkdir(parents=True, exist_ok=True)
-    chunks: List[Path] = []
-    count = max(1, int(math.ceil(total_duration / chunk_seconds)))
-
-    progress(f"Preparing music and effects: 0/{count}")
-    for n in range(count):
-        runner.check_cancel()
-        start = n * chunk_seconds
-        end = min(total_duration, (n + 1) * chunk_seconds)
-        dur = max(0.01, end - start)
-        chunk = chunk_dir / f"chunk_{n:05d}.wav"
-        chunks.append(chunk)
-        if config.resume and _complete_wav(chunk, minimum_seconds=dur * .98) and not config.force:
-            progress(f"Preparing music and effects: {n + 1}/{count} (cached)")
-            continue
-
-        local: List[Tuple[float, float]] = []
-        for a, b in intervals:
-            if a >= end:
-                break
-            if b <= start:
-                continue
-            # Keep the original region boundaries across chunk cuts. Clipping
-            # them here would start a second fade inside continuous dialogue.
-            local.append((a - start, b - start))
-
-        if not local:
-            _atomic_media_run(runner, [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-ss", f"{start:.6f}", "-t", f"{dur:.6f}", "-i", str(original),
-                "-ac", "2", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(chunk),
-            ], chunk)
-            progress(f"Preparing music and effects: {n + 1}/{count}")
-            continue
-
-        # Chunk-local expressions keep ffmpeg command size manageable even for
-        # multi-hour episodes. Original is used outside speech; no_vocals inside.
-        # Fade the two beds through each other. A binary volume switch can
-        # click at a speech boundary and expose a syllable on a frame edge.
-        terms = "+".join(
-            f"max(0,min(1,min((t-({a:.6f}))/{DIALOGUE_CROSSFADE:.3f},"
-            f"({b:.6f}-t)/{DIALOGUE_CROSSFADE:.3f})))" for a, b in local
-        )
-        mask = f"min(1,{terms})"
-        filt = (
-            f"[0:a]atrim=duration={dur:.6f},asetpts=PTS-STARTPTS,"
-            f"volume='1-({mask})':eval=frame[o];"
-            f"[1:a]atrim=duration={dur:.6f},asetpts=PTS-STARTPTS,"
-            f"volume='{mask}':eval=frame[s];"
-            "[o][s]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
-            "alimiter=limit=0.98[bed]"
-        )
-        _atomic_media_run(runner, [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-ss", f"{start:.6f}", "-t", f"{dur:.6f}", "-i", str(original),
-            "-ss", f"{start:.6f}", "-t", f"{dur:.6f}", "-i", str(separated_background),
-            "-filter_complex", filt, "-map", "[bed]",
-            "-ac", "2", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(chunk),
-        ], chunk)
-        progress(f"Preparing music and effects: {n + 1}/{count}")
-
-    progress("Combining music and effects chunks…")
-    concat = work_dir / f"background_concat_{signature}.txt"
-    concat.write_text("".join(f"file {_ffconcat_quote(x)}\n" for x in chunks), encoding="utf-8")
-    _atomic_media_run(runner, [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "concat", "-safe", "0", "-i", str(concat),
-        "-c:a", "pcm_s16le", str(out),
-    ], out)
-    return out
 
 def mix_background_and_dub(
     background: Path,
@@ -2146,7 +1805,7 @@ def mix_background_and_dub(
     runner: CommandRunner,
     progress: ProgressCallback,
 ) -> Path:
-    getattr(runner, "set_stage", lambda *_: None)("mixing", "Mixing background and dub")
+    runner.set_stage("mixing", "Mixing background and dub")
     mix_signature = hashlib.sha1(json.dumps({
         "background": [background.name, background.stat().st_size],
         "dub": [str(dub), dub.stat().st_size],
@@ -2154,7 +1813,7 @@ def mix_background_and_dub(
         "dub_volume": config.dub_volume,
         "ducking": config.ducking,
     }, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-    out = work_dir / f"mixed_english_{mix_signature}.m4a"
+    out = work_dir / f"mixed_english_{mix_signature}.wav"
     bg_duration = ffprobe_duration(background, runner)
     if config.resume and out.exists() and out.stat().st_size > 1000 and not config.force:
         try:
@@ -2184,7 +1843,7 @@ def _mix_to_temp(background, dub, temp, out, bg_duration, config, runner, progre
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(background), "-i", str(dub),
             "-filter_complex", filt, "-map", "[mix]",
-            "-t", f"{bg_duration:.6f}", "-c:a", "aac", "-b:a", "192k", str(temp),
+            "-t", f"{bg_duration:.6f}", "-c:a", "pcm_s16le", str(temp),
         ], check=False)
         if cp.returncode == 0:
             temp.replace(out)
@@ -2201,61 +1860,16 @@ def _mix_to_temp(background, dub, temp, out, bg_duration, config, runner, progre
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(background), "-i", str(dub),
         "-filter_complex", filt, "-map", "[mix]",
-        "-t", f"{bg_duration:.6f}", "-c:a", "aac", "-b:a", "192k", str(temp),
+        "-t", f"{bg_duration:.6f}", "-c:a", "pcm_s16le", str(temp),
     ])
     temp.replace(out)
     return out
 
 
-def mux_video(video: Path, audio: Path, final: Path, runner: CommandRunner,
-              progress: ProgressCallback, extend_by: float = 0.0) -> None:
-    getattr(runner, "set_stage", lambda *_: None)("exporting", "Exporting dubbed video")
-    final.parent.mkdir(parents=True, exist_ok=True)
-    progress("Creating final dubbed MP4…")
-    temp = final.with_name(final.stem + ".partial" + final.suffix)
-    temp.unlink(missing_ok=True)
-    try:
-        _mux_to_temp(video, audio, temp, final, runner, extend_by=extend_by)
-    finally:
-        temp.unlink(missing_ok=True)
-
-
-def _mux_to_temp(video: Path, audio: Path, temp: Path, final: Path, runner: CommandRunner,
-                 extend_by: float = 0.0) -> None:
-    if extend_by > 0.02:
-        codec = "h264_videotoolbox" if platform.system() == "Darwin" else "libx264"
-        runner.run([
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(video), "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
-            "-vf", f"tpad=stop_mode=clone:stop_duration={extend_by + 0.1:.3f}",
-            "-c:v", codec, "-b:v", "6M", "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart", "-shortest", str(temp),
-        ])
-        validate_media_streams(temp, runner)
-        temp.replace(final)
-        return
-    cp = runner.run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(video), "-i", str(audio),
-        "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart",
-        "-shortest", str(temp),
-    ], check=False)
-    if cp.returncode == 0:
-        validate_media_streams(temp, runner)
-        temp.replace(final)
-        return
-    # Fallback for source codecs that cannot be copied into MP4.
-    codec = "h264_videotoolbox" if platform.system() == "Darwin" else "libx264"
-    runner.run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(video), "-i", str(audio),
-        "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", codec, "-b:v", "6M", "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart", "-shortest", str(temp),
-    ])
-    validate_media_streams(temp, runner)
-    temp.replace(final)
+def mux_video(video, audio, final, runner, progress, extend_by=0.0, **options):
+    from .export import export_video
+    runner.set_stage("exporting", "Exporting dubbed video with original tracks")
+    return export_video(video, audio, final, runner, progress, **options)
 
 
 def _character_map_path(config: Config, out: Path, key: str) -> Path:
@@ -2283,7 +1897,8 @@ def transcribe_source_audio(
     requested_language = config.source_language
     retry_reason = "No speech found in separated dialogue"
     try:
-        segments = transcribe_audio(dialogue, config, work, runner, progress, task="transcribe")
+        segments = transcribe_audio(dialogue, config, work, runner, progress, task="transcribe",
+                                    fallback_audio=original if original != dialogue else None)
     except TranscriptionQualityError:
         if dialogue == original:
             raise
@@ -2375,6 +1990,7 @@ def recover_source_language(
 
 
 def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
+    config = replace(config, glossary=dict(config.glossary), quality_settings=dict(config.quality_settings))
     progress = progress or print
     runner = runner or CommandRunner(progress)
     if config.pipeline_profile == "quality_v1":
@@ -2420,6 +2036,7 @@ def analyze_only(config: Config, progress: Optional[ProgressCallback] = None, ru
     return {"character_map": char_path, f"{source_kind}_srt": zh_srt}
 
 def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, runner: Optional[CommandRunner] = None) -> Dict[str, Path]:
+    config = replace(config, glossary=dict(config.glossary), quality_settings=dict(config.quality_settings))
     progress = progress or print
     runner = runner or CommandRunner(progress)
     if config.pipeline_profile == "quality_v1":
@@ -2464,6 +2081,62 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     publish(f"{source_kind}_srt", zh_srt, config.source_language)
     publish(f"{source_kind}_vtt", zh_vtt, config.source_language)
 
+    vocals, background = transcript_audio, None
+    if config.mode == "dub":
+        try:
+            vocals, background = separate_dialogue(audio, work, runner, progress, config)
+        except CancelledError:
+            raise
+        except PipelineError as exc:
+            progress(f"Stem separation unavailable; preserving subtitles before retrying: {exc}")
+    profiles = []
+    profile_map: Dict[str, dict] = {}
+    char_path = _character_map_path(config, out, key)
+    if config.mode == "dub" and config.multi_character:
+        from .characters import analyze_characters, write_character_map
+        # Analyze against source timestamps. If Whisper-direct translation changed segmentation,
+        # transfer speaker/style labels to the closest English segment by midpoint overlap.
+        try:
+            profiles, payload = analyze_characters(
+                speaker_analysis_audio(vocals, audio, progress), zh_segments, work, out, runner, progress,
+                resume=config.resume, force=config.force, max_speakers=config.max_speakers,
+                speaker_threshold=config.speaker_threshold, series_id=config.series_id or key,
+                available_voices=list_macos_voices(), override_path=char_path,
+                speaker_backend=config.speaker_backend,
+                make_voice_references=config.auto_voice_references
+                                      and config.tts_engine in {"auto", "chatterbox"},
+            )
+        except CancelledError:
+            raise
+        except Exception as exc:
+            progress(f"Speaker analysis unavailable; translating with unknown speaker tags: {exc}")
+            profiles, payload = [], {"characters": [], "segments": []}
+        payload["characters"] = [p.to_dict() for p in profiles]
+        write_character_map(payload, char_path)
+        profile_map = _version_profiles(profiles, config.voice_overrides)
+        progress(f"Character map: {char_path}")
+
+    from .audio_analysis import analyze_vocals, snap_segments
+    vocal_intervals = []
+    try:
+        vocal_intervals = analyze_vocals(vocals, work, runner, force=config.force)
+        zh_segments = snap_segments(zh_segments, vocal_intervals, ffprobe_duration(audio, runner))
+    except (OSError, ValueError, RuntimeError) as exc:
+        if isinstance(exc, CancelledError): raise
+        progress(f"Vocal onset analysis unavailable: {exc}")
+    # Merge only close fragments whose speaker identity is known and identical.
+    merged = []
+    for seg in zh_segments:
+        if (merged and seg.speaker_id and seg.speaker_id == merged[-1].speaker_id
+                and seg.style == merged[-1].style and 0 <= seg.start-merged[-1].end <= .15
+                and seg.end-merged[-1].start <= 6 and len(seg.text)+len(merged[-1].text) <= 100):
+            merged[-1] = replace(merged[-1], end=seg.end, text=merged[-1].text+" "+seg.text)
+        else:
+            merged.append(replace(seg))
+    zh_segments = merged
+    write_srt(zh_segments, zh_srt)
+    write_vtt(zh_segments, zh_vtt)
+
     translation_mode = resolve_translation_mode(config)
     if config.target_language != "en" and translation_mode == "whisper" and config.source_language != config.target_language:
         raise PipelineError("Whisper direct translation only supports English; choose LLM or Ollama.")
@@ -2472,10 +2145,13 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         progress("Direct Whisper translation does not provide aligned source cues for automatic review")
 
     if config.source_language == config.target_language:
-        segments = [Segment(s.start, s.end, s.text, s.text) for s in zh_segments]
+        segments = [replace(s, translated=s.text) for s in zh_segments]
         progress("Source and target languages match; keeping the original dialogue")
     elif translation_mode == "llm":
         segments = translate_with_llm(zh_segments, config, work, runner, progress)
+    elif translation_mode == "cloud":
+        from .translation import translate
+        segments = translate(zh_segments, config, work, runner, progress, "cloud")
     elif translation_mode == "ollama":
         segments = translate_with_ollama_provider(zh_segments, config, work, runner, progress)
     elif translation_mode == "whisper":
@@ -2503,6 +2179,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     else:
         raise PipelineError(f"Unsupported translation mode: {translation_mode}")
 
+    segments = [replace(seg) for seg in segments]
     if not segments:
         raise PipelineError("Translation returned no usable dialogue. Source subtitles were saved; retry with a different model or provider.")
 
@@ -2552,7 +2229,7 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
     # Stronger model suggestions can be added to this report later with the CLI
     # without rerunning transcription, translation, or TTS.
     from .review import review_subtitles
-    getattr(runner, "set_stage", lambda *_: None)("reviewing", "Reviewing subtitles")
+    runner.set_stage("reviewing", "Reviewing subtitles")
     review_path = en_srt.with_suffix(".review.json")
     timing_path = en_srt.with_suffix(".timing.json")
     approval_path = version_dir / f"{key}_{config.target_language}.review-approval.json"
@@ -2626,40 +2303,9 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         progress(f"DONE: {en_srt}")
         return results
 
-    # Both subtitle sets are durable before optional separation and voice work.
-    # A Demucs failure can be retried without losing the transcript or translation.
-    vocals, background = separate_dialogue(audio, work, runner, progress, config)
 
-    profiles = []
-    profile_map: Dict[str, dict] = {}
-    char_path = _character_map_path(config, out, key)
-    if config.mode == "dub" and config.multi_character:
-        from .characters import analyze_characters, write_character_map
-        # Analyze against source timestamps. If Whisper-direct translation changed segmentation,
-        # transfer speaker/style labels to the closest English segment by midpoint overlap.
-        profiles, payload = analyze_characters(
-            speaker_analysis_audio(vocals, audio, progress), zh_segments, work, out, runner, progress,
-            resume=config.resume, force=config.force, max_speakers=config.max_speakers,
-            speaker_threshold=config.speaker_threshold, series_id=config.series_id or key,
-            available_voices=list_macos_voices(), override_path=char_path,
-            speaker_backend=config.speaker_backend,
-            make_voice_references=config.auto_voice_references
-                                  and config.tts_engine in {"auto", "chatterbox"},
-        )
-        if segments is not zh_segments:
-            for seg in segments:
-                mid = (seg.start + seg.end) / 2.0
-                candidates = [z for z in zh_segments if z.start <= mid <= z.end]
-                if not candidates and zh_segments:
-                    candidates = [min(zh_segments, key=lambda z: abs(((z.start + z.end) / 2.0) - mid))]
-                if candidates:
-                    seg.speaker_id = candidates[0].speaker_id
-                    seg.style = candidates[0].style
-                    seg.style_confidence = candidates[0].style_confidence
-        payload["characters"] = [p.to_dict() for p in profiles]
-        write_character_map(payload, char_path)
-        profile_map = _version_profiles(profiles, config.voice_overrides)
-        progress(f"Character map: {char_path}")
+    if background is None:
+        vocals, background = separate_dialogue(audio, work, runner, progress, config)
 
     if profiles:
         snapshot_map = version_dir / f"{key}_characters.json" if config.version_id else char_path
@@ -2671,191 +2317,60 @@ def run_pipeline(config: Config, progress: Optional[ProgressCallback] = None, ru
         results["character_map"] = snapshot_map
         publish("character_map", snapshot_map, config.target_language)
 
+    if translation_mode == "whisper":
+        for seg in segments:
+            nearest = min(zh_segments, key=lambda row: abs(row.start-seg.start))
+            seg.speaker_id, seg.style = nearest.speaker_id, nearest.style
+
     tts_dir = work / f"tts_{config.tts_engine}_{config.version_id}" if config.version_id else work / f"tts_{config.tts_engine}"
     clips: List[Path] = []
     total_duration = ffprobe_duration(audio, runner)
     total_lines = len(segments)
-    from .timing import TimingRewriter
-    timing_rewriter = TimingRewriter(config, provider=translation_mode)
+    from .timing import TimingResolver
+    from .audio_analysis import timing_windows, window_rms
+    resolver = TimingResolver(config, runner, progress, tts_dir, translation_mode)
+    windows = timing_windows(segments, vocal_intervals, total_duration)
+    timing_issues = {}
     for i, seg in enumerate(segments):
         runner.check_cancel()
-        profile = profile_map.get(seg.speaker_id, {}) if config.multi_character else {}
-        next_start = segments[i + 1].start if i + 1 < total_lines else total_duration
-        saved_fix = timing_fixes.get(str(i + 1), {})
-        saved_tempo = (min(1.5, float(saved_fix.get("max_tempo", 1.0)))
-                       if isinstance(saved_fix, dict) and saved_fix.get("source") == seg.text
-                       and saved_fix.get("replacement") == seg.translated and not saved_fix.get("allow_overlap") else 1.0)
+        profile = dict(profile_map.get(seg.speaker_id, {})) if config.multi_character else {}
         try:
-            clips.append(prepare_tts_clip(seg, i, tts_dir, config, runner, progress,
-                                          profile=profile, next_start=next_start,
-                                          **({"max_tempo": saved_tempo} if saved_tempo > 1.0 else {})))
-        except TimingOverlapError as issue:
-            original = seg.translated
-            # Preserve the existing translation whenever a modest speed change
-            # can fit it; rewriting can silently change names or meaning.
-            if issue.available > 0 and issue.duration <= issue.available * 1.5 + 0.03:
-                try:
-                    clip = prepare_tts_clip(seg, i, tts_dir, config, runner, progress,
-                                            profile=profile, next_start=next_start, max_tempo=1.5)
-                except TimingOverlapError:
-                    pass  # Measure the rendered clip; try a shorter line below.
-                else:
-                    clips.append(clip)
-                    timing_fixes[str(i + 1)] = {"source": seg.text, "original": original,
-                                                "replacement": original,
-                                                "available": round(issue.available, 3),
-                                                "max_tempo": 1.5}
-                    _atomic_json_write(fixes_path, timing_fixes)
-                    publish("timing_fixes", fixes_path, config.target_language)
-                    progress(f"Fitted line {i + 1} by speeding speech up to 1.5×")
-                    continue
-            rejected = [original]
-            measured_options = [(original, issue.duration)]
-            latest_issue = issue
-            repair_errors = []
-            repaired = False
-            for attempt in range(3):
-                runner.check_cancel()
-                try:
-                    candidate = timing_rewriter.candidate(seg.text, original, latest_issue.duration,
-                                                          issue.available, attempt, rejected, runner)
-                except CancelledError:
-                    raise
-                except Exception as exc:
-                    repair_errors.append(f"Automatic rewrite failed: {exc}")
-                    progress(f"Warning: {repair_errors[-1]}")
-                    break
-                if not candidate:
-                    continue
-                rejected.append(candidate)
-                trial = Segment.from_dict(seg.to_dict())
-                trial.translated = candidate
-                progress(f"Testing shorter voice for line {i + 1} ({attempt + 1}/3)…")
-                try:
-                    clip = prepare_tts_clip(trial, i, tts_dir, config, runner, progress,
-                                            profile=profile, next_start=next_start)
-                except TimingOverlapError as measured:
-                    latest_issue = measured
-                    measured_options.append((candidate, measured.duration))
-                    continue
-                seg.translated = candidate
-                clips.append(clip)
-                timing_fixes[str(i + 1)] = {"source": seg.text, "original": original,
-                                            "replacement": candidate,
-                                            "available": round(issue.available, 3)}
-                _atomic_json_write(fixes_path, timing_fixes)
-                publish("timing_fixes", fixes_path, config.target_language)
-                write_srt(segments, en_srt, translated=True)
-                write_vtt(segments, en_vtt, translated=True)
-                publish("translated_srt", en_srt, config.target_language)
-                publish("translated_vtt", en_vtt, config.target_language)
-                progress(f"Automatically fitted line {i + 1}: {candidate}")
-                repaired = True
-                break
-            if not repaired:
-                # Use pitch-preserving tempo only after testing natural speech
-                # and shorter translations. Prefer original meaning if it fits.
-                for wording, duration in measured_options:
-                    if issue.available <= 0 or duration > issue.available * 1.5 + 0.03:
-                        continue
-                    runner.check_cancel()
-                    trial = Segment.from_dict(seg.to_dict())
-                    trial.translated = wording
-                    progress(f"Trying up to 1.5× voice speed for line {i + 1}: {wording}")
-                    try:
-                        clip = prepare_tts_clip(trial, i, tts_dir, config, runner, progress,
-                                                profile=profile, next_start=next_start,
-                                                max_tempo=1.5)
-                    except TimingOverlapError:
-                        continue
-                    seg.translated = wording
-                    clips.append(clip)
-                    timing_fixes[str(i + 1)] = {"source": seg.text, "original": original,
-                                                "replacement": wording,
-                                                "available": round(issue.available, 3),
-                                                "max_tempo": 1.5}
-                    _atomic_json_write(fixes_path, timing_fixes)
-                    publish("timing_fixes", fixes_path, config.target_language)
-                    if wording != original:
-                        write_srt(segments, en_srt, translated=True)
-                        write_vtt(segments, en_vtt, translated=True)
-                        publish("translated_srt", en_srt, config.target_language)
-                        publish("translated_vtt", en_vtt, config.target_language)
-                    progress(f"Automatically fitted line {i + 1} with capped voice speed")
-                    repaired = True
-                    break
-            if repaired:
-                if timing_path.exists():
-                    try:
-                        existing_issues = json.loads(timing_path.read_text(encoding="utf-8"))
-                        existing_issues.pop(str(i + 1), None)
-                        _atomic_json_write(timing_path, existing_issues)
-                    except (OSError, ValueError):
-                        pass
-                continue
-            _atomic_json_write(timing_path, {str(i + 1): {
-                "cue": i + 1, "source": seg.text, "attempted_translation": original,
-                "duration": latest_issue.duration, "available": issue.available,
-                "reason": "No intelligible meaning-preserving timing fit within 1.5x",
-                "repair_errors": repair_errors,
-            }})
-            publish("timing_report", timing_path, config.target_language)
-            raise PipelineError(f"Line {i + 1} cannot fit safely within 1.5×; subtitles and voice checkpoints saved. "
-                                "No overlapping dub will be rendered.")
-        if timing_path.exists():
-            try:
-                previous_issues = json.loads(timing_path.read_text(encoding="utf-8"))
-                if str(i + 1) in previous_issues:
-                    del previous_issues[str(i + 1)]
-                    _atomic_json_write(timing_path, previous_issues)
-            except (OSError, ValueError):
-                pass
-        if (i + 1) % 5 == 0 or i + 1 == total_lines:
-            who = f" ({seg.speaker_id}, {seg.style})" if seg.speaker_id else ""
-            reused = getattr(runner, "reused_voice_clips", 0)
-            progress(f"Generating dub voice: {i + 1}/{total_lines}{who} · {reused} reused")
-
-    last_fix = timing_fixes.get(str(total_lines), {})
-    extend_last_line = isinstance(last_fix, dict) and last_fix.get("allow_overlap") is True
-    extra_seconds = (max(0.0, segments[-1].start + ffprobe_duration(clips[-1], runner) - total_duration)
-                     if extend_last_line else 0.0)
-    if extra_seconds > 0.02:
-        original_duration = total_duration
-        total_duration += extra_seconds + 0.1
-        progress(f"Warning: extending the final frame by {extra_seconds:.2f}s to finish the last voice")
-        for label, path in (("original", audio), ("separated", background)):
-            padded = work / f"{label}_padded_{int(total_duration * 1000)}.wav"
-            if config.force or not config.resume or not _complete_wav(padded, minimum_seconds=total_duration * .98):
-                _atomic_media_run(runner, [
-                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(path),
-                    "-af", "apad", "-t", f"{total_duration:.6f}",
-                    "-ac", "2", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(padded),
-                ], padded)
-            if label == "original":
-                audio = padded
-            else:
-                background = padded
-    else:
-        original_duration = total_duration
+            profile["source_rms"] = window_rms(vocals, seg.start, seg.end)
+        except (OSError, RuntimeError):
+            pass
+        fitted, clip, record = resolver.resolve(seg, i, profile, windows[i])
+        segments[i] = fitted
+        clips.append(clip)
+        previous_fix = timing_fixes.get(str(i+1), {})
+        if previous_fix.get("replacement") == record["original"] and previous_fix.get("source") == record["source"]:
+            record["original"] = previous_fix["original"]
+        timing_fixes[str(i+1)] = record
+        if record["status"] == "needs_review":
+            timing_issues[str(i+1)] = record
+        _atomic_json_write(fixes_path, timing_fixes)
+        _atomic_json_write(timing_path, timing_issues)
+        write_srt(segments, en_srt, translated=True)
+        write_vtt(segments, en_vtt, translated=True)
+        progress(f"Generating dub voice: {i+1}/{total_lines}")
+    results["timing_report"] = timing_path
+    publish("timing_report", timing_path, config.target_language)
+    publish("timing_fixes", fixes_path, config.target_language)
+    publish("translated_srt", en_srt, config.target_language)
+    publish("translated_vtt", en_vtt, config.target_language)
     duration_callback = getattr(runner, "duration", None)
     if duration_callback:
         duration_callback(total_duration)
-    from .visual_sync import align_dub_to_visible_speech
-    getattr(runner, "set_stage", lambda *_: None)("visual_timing", "Matching visible speech timing")
-    timeline_segments = align_dub_to_visible_speech(
-        video, segments, clips, work, runner, progress, total_duration=total_duration,
-        resume=config.resume, force=config.force,
-    )
+    timeline_segments = segments
     dub_timeline = render_dub_timeline(timeline_segments, clips, total_duration, work, config, runner, progress)
     background_bed = build_dialogue_safe_background(
-        audio, background, zh_segments, total_duration, work, config, runner, progress
+        audio, background, zh_segments, total_duration, work, config, runner, progress, vocals=vocals
     )
     mixed = mix_background_and_dub(background_bed, dub_timeline, work, config, runner, progress)
+    from .loudness import match_loudness
+    mixed = match_loudness(mixed, audio, runner, progress)
     final = version_dir / f"{key}_{config.target_language.upper()}_DUB.mp4"
-    if total_duration > original_duration + 0.02:
-        mux_video(video, mixed, final, runner, progress, total_duration - original_duration)
-    else:
-        mux_video(video, mixed, final, runner, progress)
+    final = mux_video(video, mixed, final, runner, progress, subtitles=en_srt,
+                      source_language=config.source_language, target_language=config.target_language) or final
     results["dubbed_video"] = final
     exported_audio = version_dir / f"{key}_{config.target_language.upper()}_DUB.m4a"
     if mixed != exported_audio:

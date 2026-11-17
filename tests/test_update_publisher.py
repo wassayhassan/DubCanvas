@@ -15,7 +15,7 @@ class UpdatePublisherTests(unittest.TestCase):
 
     def test_outdated_main_build_cannot_replace_update_manifest(self):
         runs = {"workflow_runs": [{"id": i, "name": name, "status": "completed", "conclusion": "success"}
-                for i, name in enumerate(("Backend boundary tests", "SwiftUI shell build", "Quality runtime dependency resolution"))]}
+                for i, name in enumerate(("Backend boundary tests", "SwiftUI shell build", "Quality runtime dependency resolution", "macOS app bundle"))]}
         with patch.dict("os.environ", GITHUB_SHA="a" * 40, GITHUB_REPOSITORY="owner/repo"), \
              patch("macos.publish_update.run", side_effect=[json.dumps(runs), "b" * 40]) as run:
             main()
@@ -24,7 +24,7 @@ class UpdatePublisherTests(unittest.TestCase):
     def test_failed_native_quality_runtime_cannot_publish_update(self):
         runs = {"workflow_runs": [{"id": i, "name": name, "status": "completed",
                 "conclusion": "failure" if name == "Quality runtime dependency resolution" else "success"}
-                for i, name in enumerate(("Backend boundary tests", "SwiftUI shell build", "Quality runtime dependency resolution"))]}
+                for i, name in enumerate(("Backend boundary tests", "SwiftUI shell build", "Quality runtime dependency resolution", "macOS app bundle"))]}
         with patch.dict("os.environ", GITHUB_SHA="a" * 40, GITHUB_REPOSITORY="owner/repo"), \
              patch("macos.publish_update.run", return_value=json.dumps(runs)) as run:
             with self.assertRaisesRegex(RuntimeError, "required check failed"):
@@ -34,7 +34,7 @@ class UpdatePublisherTests(unittest.TestCase):
     def test_invalid_signature_cannot_publish_archive(self):
         sha = 'a' * 40
         runs = {"workflow_runs": [{"id": i, "name": name, "status": "completed", "conclusion": "success"}
-                for i, name in enumerate(("Backend boundary tests", "SwiftUI shell build", "Quality runtime dependency resolution"))]}
+                for i, name in enumerate(("Backend boundary tests", "SwiftUI shell build", "Quality runtime dependency resolution", "macOS app bundle"))]}
         with patch.dict("os.environ", GITHUB_SHA=sha, GITHUB_REPOSITORY="owner/repo"), \
              patch("macos.publish_update.run", side_effect=[json.dumps(runs), sha, RuntimeError('signature invalid')]) as run:
             with self.assertRaisesRegex(RuntimeError, 'signature invalid'): main()

@@ -11,10 +11,23 @@ struct AppUpdateManifest: Decodable, Sendable {
     let version: String
     let sha256: String
     var downloadURL: URL { URL(string: "https://github.com/wassayhassan/DubCanvas/releases/download/app-updates/DubCanvas-update-\(revision).zip")! }
-    func validate() throws {
-        guard schema == 1, revision.range(of: "^[a-f0-9]{40}$", options: .regularExpression) != nil,
-              sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil, sourceTimestamp > 0 else {
-            throw UpdateFailure("The update manifest is invalid. The installed app was not changed.")
+    var signature: String? = nil
+    var signingData: Data {
+        Data("DubCanvas update v2\n\(revision)\n\(sourceTimestamp)\n\(version)\n\(sha256)\n".utf8)
+    }
+    func validate(publicKey: String? = nil, minimumTimestamp: Int = 0) throws {
+        guard schema == 2, revision.range(of: "^[a-f0-9]{40}$", options: .regularExpression) != nil,
+              sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
+              version.range(of: "^[A-Za-z0-9.+_-]{1,64}$", options: .regularExpression) != nil,
+              sourceTimestamp > 0, sourceTimestamp >= minimumTimestamp else {
+            throw UpdateFailure("Invalid or older update manifest. The installed app was not changed.")
+        }
+        let trustedKey = publicKey ?? (Bundle.main.object(forInfoDictionaryKey: "DubCanvasUpdatePublicKey") as? String ?? "")
+        guard let keyData = Data(base64Encoded: trustedKey), keyData.count == 32,
+              let signature, let signatureData = Data(base64Encoded: signature),
+              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: keyData),
+              key.isValidSignature(signatureData, for: signingData) else {
+            throw UpdateFailure("Update signature could not be authenticated. Install a trusted build manually if this app has no release key.")
         }
     }
 }
@@ -50,9 +63,11 @@ final class AppUpdater: ObservableObject {
             if response.statusCode == 404 { status = "No automatic update has been published yet."; return }
             guard response.statusCode == 200 else { throw UpdateFailure("Update check failed (HTTP \(response.statusCode)). Try again later.") }
             let manifest = try JSONDecoder().decode(AppUpdateManifest.self, from: data)
-            try manifest.validate()
             let current = Bundle.main.object(forInfoDictionaryKey: "DubCanvasSourceRevision") as? String ?? ""
             let timestamp = Int(Bundle.main.object(forInfoDictionaryKey: "DubCanvasSourceTimestamp") as? String ?? "0") ?? 0
+            let newestSeen = max(timestamp, UserDefaults.standard.integer(forKey: "DubCanvasNewestSignedUpdate"))
+            try manifest.validate(minimumTimestamp: newestSeen)
+            UserDefaults.standard.set(manifest.sourceTimestamp, forKey: "DubCanvasNewestSignedUpdate")
             if manifest.revision == current || (timestamp > 0 && manifest.sourceTimestamp <= timestamp) {
                 status = "DubCanvas is up to date."
             } else {
@@ -129,6 +144,12 @@ final class AppUpdater: ObservableObject {
     nonisolated static func prepare(archive: URL, work: URL, staged: URL, current: URL,
                                     manifest: AppUpdateManifest, logURL: URL) throws -> URL {
         let fm = FileManager.default
+        let currentInfo = try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: current.appendingPathComponent("Contents/Info.plist")), format: nil) as? [String: Any] ?? [:]
+        let installedTimestamp = Int(currentInfo["DubCanvasSourceTimestamp"] as? String ?? "0") ?? 0
+        try manifest.validate(publicKey: currentInfo["DubCanvasUpdatePublicKey"] as? String ?? "",
+                              minimumTimestamp: installedTimestamp)
+        guard manifest.sourceTimestamp > installedTimestamp else { throw UpdateFailure("Update is not newer than the installed app.") }
         let file = try FileHandle(forReadingFrom: archive)
         defer { try? file.close() }
         var hash = SHA256()
@@ -142,6 +163,9 @@ final class AppUpdater: ObservableObject {
         guard let info = try PropertyListSerialization.propertyList(from: Data(contentsOf: app.appendingPathComponent("Contents/Info.plist")), format: nil) as? [String: Any],
               info["CFBundleIdentifier"] as? String == "com.animedubber.app",
               info["DubCanvasSourceRevision"] as? String == manifest.revision,
+              (info["DubCanvasUpdatePublicKey"] as? String) == (currentInfo["DubCanvasUpdatePublicKey"] as? String),
+              Int(info["DubCanvasSourceTimestamp"] as? String ?? "0") == manifest.sourceTimestamp,
+              info["CFBundleShortVersionString"] as? String == manifest.version,
               fm.isExecutableFile(atPath: app.appendingPathComponent("Contents/MacOS/DubCanvas").path) else {
             throw UpdateFailure("The downloaded app does not match this update.")
         }
@@ -164,6 +188,8 @@ final class AppUpdater: ObservableObject {
                 }
                 try run(python, ["-m", "pip", "check"], logURL: logURL)
                 try run(python, ["-m", "dubcanvas", "--help"], logURL: logURL, directory: backend)
+                // Only legacy in-bundle environments modify the signed bundle.
+                try run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", staged.path], logURL: logURL)
             } else {
                 guard fm.isExecutableFile(atPath: staged.appendingPathComponent("Contents/Resources/tools/uv").path) else {
                     throw UpdateFailure("Update is missing the app-managed installer.")
@@ -171,7 +197,6 @@ final class AppUpdater: ObservableObject {
                 // Managed runtimes live outside the app. Changed requirements
                 // are reconciled by the setup screen before starting jobs.
             }
-            try run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", staged.path], logURL: logURL)
             let helper = work.appendingPathComponent("install_update.sh")
             try fm.copyItem(at: app.appendingPathComponent("Contents/Resources/install_update.sh"), to: helper)
             return helper

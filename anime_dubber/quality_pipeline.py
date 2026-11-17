@@ -496,6 +496,16 @@ def fit_takes(segments, takes, cuts, q, work, runner):
         b = min(raw_duration, b)
         length = b - a
         available = window(segments, i, duration, cuts, q)
+        if "vocal_windows" in q:
+            left, right = q["vocal_windows"][i]
+            right = min([right] + [cut for cut in cuts if cut >= seg.end-.05 and cut > seg.start])
+            left = max([left] + [cut for cut in cuts if cut <= seg.start])
+            available = max(.001, right-seg.start)
+            if choose_tempo(length, available, seg.style, q) is None and left < seg.start:
+                from dataclasses import replace
+                seg = replace(seg, start=left)
+                segments[i] = seg
+                available = max(.001, right-left)
         tempo = choose_tempo(length, available, seg.style, q)
         if tempo is None:
             failed.append(i)
@@ -511,6 +521,17 @@ def fit_takes(segments, takes, cuts, q, work, runner):
             runner.run(["rubberband", "-3", "-T", f"{tempo:.9f}", str(trimmed), str(fitted)])
         else:
             shutil.copy2(trimmed, fitted)
+        if q.get("source_vocals"):
+            from .audio_analysis import window_rms
+            from .core import _atomic_media_run
+            source_level = window_rms(q["source_vocals"], seg.start, seg.end)
+            voice_level = window_rms(fitted, 0, ffprobe_duration(fitted, runner))
+            if min(source_level, voice_level) > 1e-5:
+                leveled = fitted.with_name(fitted.stem+"_leveled.wav")
+                gain = max(.25, min(4, source_level/voice_level))
+                _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(fitted),
+                    "-af", f"volume={gain}", "-c:a", "pcm_f32le", str(leveled)], leveled)
+                fitted = leveled
         actual = ffprobe_duration(fitted, runner)
         if actual > available + .015:
             failed.append(i)
@@ -559,7 +580,7 @@ def background_bed(audio, stems, segments, work, runner):
     _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(stems["music"]), "-i", str(stems["effects"]),
         "-filter_complex", "[0:a][1:a]amix=inputs=2:normalize=0:duration=first[b]", "-map", "[b]",
         "-ar", "48000", "-c:a", "pcm_f32le", str(background)], background)
-    return hybrid_background(audio, background, segments, work, runner)
+    return hybrid_background(audio, background, segments, work, runner, vocals=stems["dialogue"])
 
 def mix(audio, stems, segments, clips, duration, work, config, q, runner, progress, *, source_segments=None):
     from .core import (_atomic_media_run, render_dub_timeline,
@@ -577,12 +598,22 @@ def mix(audio, stems, segments, clips, duration, work, config, q, runner, progre
                  "[b][v]amix=inputs=2:normalize=0:duration=first[m]")
     _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(bed), "-i", str(timeline),
         "-filter_complex", graph, "-map", "[m]", "-ar", "48000", "-c:a", "pcm_f32le", str(drymix)], drymix)
+    from .loudness import measure
+    import math
+    source_lufs = float(measure(audio, runner).get("input_i", "nan"))
+    q = dict(q)
+    if math.isfinite(source_lufs):
+        q["loudness_lufs"] = max(-70, min(-5, source_lufs))
     # Reserve headroom for AAC intersample peaks; verify delivered peaks after encoding.
     loud = f"loudnorm=I={q['loudness_lufs']}:TP={q['true_peak_db'] - .8}:LRA=11"
     measured = runner.run(["ffmpeg", "-hide_banner", "-i", str(drymix), "-af", loud + ":print_format=json", "-f", "null", "-"])
     stats = parse_object("{" + (measured.stderr or "").rsplit("{", 1)[-1])
     filters = loud + ":linear=true:measured_I={input_i}:measured_TP={input_tp}:measured_LRA={input_lra}:measured_thresh={input_thresh}:offset={target_offset}".format(**stats)
     master = work / "mix-master.wav"
+    if float(stats.get("input_i", "nan")) == -math.inf:
+        progress("Warning: mixed track is silent; check timing review for omitted voices")
+        shutil.copy2(drymix, master)
+        return master
     _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(drymix), "-af", filters,
         "-ar", "48000", "-c:a", "pcm_f32le", str(master)], master)
     from .core import _atomic_json_write
@@ -591,7 +622,7 @@ def mix(audio, stems, segments, clips, duration, work, config, q, runner, progre
         raise PipelineError("Final master duration differs from source; mux blocked")
     return master
 
-def hybrid_background(original, separated, segments, work, runner):
+def hybrid_background(original, separated, segments, work, runner, *, vocals=None):
     """48 kHz float streaming; samples outside replacement fades remain original."""
     import numpy as np
     import soundfile as sf
@@ -605,6 +636,9 @@ def hybrid_background(original, separated, segments, work, runner):
             if abs(source.frames - stems.frames) > 2:
                 raise PipelineError("Background stems differ from the source duration")
             intervals = _merge_dialogue_guard_intervals(segments, source.frames / 48000)
+            if vocals:
+                from .audio_analysis import analyze_vocals, merge_intervals
+                intervals = merge_intervals(intervals + analyze_vocals(vocals, work, runner), source.frames / 48000, padding=.1)
             with sf.SoundFile(temporary, "w", samplerate=48000, channels=2, subtype="FLOAT") as target:
                 frame = 0
                 while frame < source.frames:
@@ -731,9 +765,13 @@ def run_quality(config, progress, runner, *, analysis=False):
             _atomic_json_write(ledger_path, ledger)
     if config.mode == "subtitles":
         return results
-    runtime_q = {**q, "media_duration": duration}
+    from .audio_analysis import analyze_vocals, timing_windows
+    vocal_activity = analyze_vocals(stems["dialogue"], work, runner, force=config.force)
+    runtime_q = {**q, "media_duration": duration, "source_vocals": str(stems["dialogue"]),
+                 "vocal_windows": timing_windows(segments, vocal_activity, duration)}
     original_segments = list(segments)
     delivery_hints = {}
+    omitted = set()
     for attempt in range(3):
         takes = generate_checked_speech(segments, profiles, glossary, config, q, work, version_cp, runner, progress,
                                        delivery_hints=delivery_hints)
@@ -758,32 +796,31 @@ def run_quality(config, progress, runner, *, analysis=False):
                 rescue_q = {**runtime_q, "normal_speed": q["maximum_speed"], "urgent_speed": q["maximum_speed"]}
                 clips, failed = fit_takes(segments, takes, cuts, rescue_q, work, runner)
             if failed:
-                raise PipelineError("Automatic timing recovery could not fit cues " + ", ".join(str(i + 1) for i in failed)
-                                    + "; original video preserved, subtitles and voices saved")
+                if config.timing_failure == "stop":
+                    raise PipelineError("Automatic timing recovery could not fit cues " + ", ".join(str(i + 1) for i in failed))
+                omitted = set(failed)
+                report = []
+                for i in failed:
+                    available = max(.01, window(segments, i, duration, cuts, runtime_q))
+                    silent = work / f"needs-review-{i:06d}.wav"
+                    _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                        "anullsrc=r=48000:cl=stereo", "-t", str(available), "-c:a", "pcm_f32le", str(silent)], silent)
+                    clips[i] = silent
+                    report.append({"cue": i+1, "status": "needs_review", "reason": "Voice omitted: no intelligible timing fit", "text": segments[i].translated})
+                _atomic_json_write(work / "timing-review.json", report)
+                results["timing_report"] = work / "timing-review.json"
+                _publish(runner, "timing_report", work / "timing-review.json", "en")
+                progress(f"Warning: timing review required for {len(failed)} cues; voice omitted, full subtitles preserved")
             break
         subtitles()
     rendered = [ffprobe_duration(path, runner) for path in clips]
     validate_schedule(segments, rendered, cuts)
-    from .visual_sync import align_dub_to_visible_speech
-    hinted = align_dub_to_visible_speech(video, segments, clips, work, runner, progress,
-        total_duration=duration, resume=config.resume, force=config.force)
     timeline_segments = list(segments)
-    # Mouth motion is soft evidence. Reject large shifts or any hard collision/cut.
-    for i, candidate in enumerate(hinted):
-        if abs(candidate.start - segments[i].start) > .15 or candidate.start < 0:
-            continue
-        trial = list(timeline_segments)
-        trial[i] = candidate
-        try:
-            validate_schedule(trial, rendered, cuts)
-        except PipelineError:
-            continue
-        if candidate.start + rendered[i] <= duration + .015:
-            timeline_segments = trial
     # Re-recognize after time stretching, not only before it.
     fitted_takes = [{**take, "path": clip, "identity": {**take["identity"], "fitted_sha256": file_digest(clip)}}
                    for take, clip in zip(takes, clips)]
-    speech_qa(fitted_takes, q, version_cp, runner, progress)
+    if len(omitted) < len(fitted_takes):
+        speech_qa([take for i, take in enumerate(fitted_takes) if i not in omitted], q, version_cp, runner, progress)
     # English captions follow the measured fitted speech, including borrowed
     # silence. Keep original Chinese/source windows intact for the background.
     from dataclasses import replace
@@ -798,7 +835,7 @@ def run_quality(config, progress, runner, *, analysis=False):
     encoded = work / "dub-audio.m4a"
     _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-i", str(master), "-c:a", "aac", "-b:a", "256k", str(encoded)], encoded)
     final = version / f"{key}_EN_DUB.mp4"
-    final = mux_preserving_video(video, encoded, final, runner, progress)
+    final = mux_preserving_video(video, encoded, final, runner, progress, subtitles=target_srt, source_language="zh", target_language="en")
     validate_media_streams(final, runner)
     # Measure the delivered AAC stream: encoding can introduce intersample peaks.
     checked = runner.run(["ffmpeg", "-hide_banner", "-i", str(final), "-af", "loudnorm=print_format=json", "-f", "null", "-"])

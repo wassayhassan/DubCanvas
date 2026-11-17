@@ -38,12 +38,12 @@ class TranscriptionQualityTests(unittest.TestCase):
             self.assertEqual(audio.name, "original.wav")
             self.assertEqual(rows[0].text, "天下武林，门派如林")
             self.assertFalse((root / "detected_source_language.json").exists())
-            self.assertFalse((root / "transcript_auto_faster_whisper_v5_precise.json").exists())
+            self.assertFalse((root / "transcript_auto_faster_whisper_v6_precise.json").exists())
 
     def test_bad_cached_transcript_is_rebuilt(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            cache = root / "transcript_zh_faster_whisper_v5_precise.json"
+            cache = root / "transcript_zh_faster_whisper_v6_precise.json"
             cache.write_text(json.dumps(credit_rows()))
             cfg = Config(source="video.mp4", output_dir=root, source_language="zh",
                          asr_provider="faster_whisper")

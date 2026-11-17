@@ -11,7 +11,7 @@ struct AppPreferences: Codable, Equatable {
     var fasterWhisperComputeType = "auto"
     var translationProvider = TranslationProvider.llm.rawValue
     var llmModel: String? = "mlx-community/Qwen3-8B-4bit"
-    var reviewModel: String? = "mlx-community/Qwen3-8B-4bit"
+    var reviewModel: String? = "mlx-community/Qwen3-14B-4bit"
     var ollamaURL = "http://127.0.0.1:11434"
     var ollamaModel = "qwen3:4b"
 
@@ -37,7 +37,7 @@ struct AppPreferences: Codable, Equatable {
     var speakerThreshold = 0.0
     var seriesContext = ""
     var backgroundVolume = 1.0
-    var dubVolume = 1.15
+    var dubVolume = 1.0
     var backgroundDucking = false
 
     var pipelineProfile: String? = "legacy"

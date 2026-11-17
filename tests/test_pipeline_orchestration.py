@@ -35,12 +35,13 @@ class PipelineOrchestrationTests(unittest.TestCase):
                        return_value=([Segment(30.6, 33.4, "天下武林,门派如林")], audio)), \
                  patch("anime_dubber.core.translate_with_llm",
                        side_effect=lambda rows, *_: [Segment(s.start, s.end, s.text, s.text) for s in rows]), \
-                 patch("anime_dubber.core.separate_dialogue") as separation:
+                 patch("anime_dubber.core.separate_dialogue", return_value=(audio, audio)), \
+                 patch("anime_dubber.core.prepare_tts_clip") as synthesis:
                 with self.assertRaisesRegex(PipelineError, "translation to en is incomplete"):
                     run_pipeline(cfg, lambda _: None, runner)
             self.assertIn("chinese_srt", published)
             self.assertNotIn("translated_srt", published)
-            separation.assert_not_called()
+            synthesis.assert_not_called()
 
 
     def test_auto_detected_english_with_chinese_transcript_is_retranscribed_and_translated(self):
@@ -50,7 +51,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
             config = Config(source=str(video), output_dir=root / "out", source_language="auto",
                             target_language="en", translation="llm", mode="subtitles")
             asr_calls = []
-            def recognize(_audio, cfg, _work, _runner, _progress, *, task="transcribe"):
+            def recognize(_audio, cfg, _work, _runner, _progress, *, task="transcribe", **_kwargs):
                 asr_calls.append(cfg.source_language)
                 cfg.source_language = "en" if cfg.source_language == "auto" else cfg.source_language
                 return [Segment(0, 2, "天下武林门派如林")]
@@ -62,7 +63,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
                  patch("anime_dubber.core.translate_with_llm", side_effect=translate) as llm:
                 result = run_pipeline(config, lambda _: None, CommandRunner())
             self.assertEqual(asr_calls, ["auto", "zh"])
-            self.assertEqual(config.source_language, "zh")
+            self.assertEqual(config.source_language, "auto")
             llm.assert_called_once()
             self.assertIn("There are many martial arts sects", result["translated_srt"].read_text())
 
@@ -167,7 +168,7 @@ class PipelineOrchestrationTests(unittest.TestCase):
                  patch("anime_dubber.core.translate_with_llm", side_effect=translate):
                 result = run_pipeline(cfg, lambda _message: None, runner)
 
-            self.assertEqual(cfg.source_language, "es")
+            self.assertEqual(cfg.source_language, "auto")
             self.assertIn(("source_srt", "es"), published)
             self.assertIn(("translated_srt", "ja"), published)
             self.assertIn("Hola", result["source_srt"].read_text())
@@ -214,12 +215,11 @@ class PipelineOrchestrationTests(unittest.TestCase):
                  patch("anime_dubber.core.translate_with_llm", side_effect=translate), \
                  patch("anime_dubber.core.list_macos_voices", return_value=[]), \
                  patch("anime_dubber.providers.tts.synthesize_chatterbox", side_effect=synthesize), \
-                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dst, _r, _p: dst.write_bytes(b"final")):
+                 patch("anime_dubber.core.mux_video", side_effect=lambda _v, _a, dst, _r, _p, **__: (dst.write_bytes(b"final"), dst)[1]):
                 results = run_pipeline(cfg, lambda _m: None, CommandRunner())
 
-            self.assertEqual(len(references), 4)
-            self.assertEqual(references[0], references[2])
-            self.assertEqual(references[1], references[3])
+            # Repeated text with the same voice reuses raw synthesis.
+            self.assertEqual(len(references), 2)
             self.assertNotEqual(references[0], references[1])
             self.assertTrue(results["dub_audio"].is_file())
             self.assertTrue(results["translated_srt"].is_file())

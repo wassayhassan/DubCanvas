@@ -17,3 +17,8 @@ __pycache__/
 # Native macOS build products
 dist/
 macos/DubCanvasApp/.build/
+
+# Local validation output
+.coverage
+coverage.xml
+htmlcov/

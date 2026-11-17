@@ -68,7 +68,7 @@ final class AppState: ObservableObject {
 
     @Published var translationProvider: TranslationProvider = .llm
     @Published var llmModel = "mlx-community/Qwen3-8B-4bit"
-    @Published var reviewModel = "mlx-community/Qwen3-8B-4bit"
+    @Published var reviewModel = "mlx-community/Qwen3-14B-4bit"
     @Published var ollamaURL = "http://127.0.0.1:11434"
     @Published var ollamaModel = "qwen3:4b"
 
@@ -94,8 +94,18 @@ final class AppState: ObservableObject {
     @Published var maxSpeakers = 12
     @Published var speakerThreshold = 0.0
     @Published var seriesContext = ""
+    @Published var projectGlossary = "{}"
+    @Published var asrPrompt = ""
+    @Published var cloudEndpoint = ""
+    @Published var cloudModel = ""
+    @Published var cloudAPIKey = ""
+    @Published var cloudConsent = false
+
+    func parsedGlossary() throws -> [String: String] {
+        try JSONDecoder().decode([String: String].self, from: Data(projectGlossary.utf8))
+    }
     @Published var backgroundVolume = 1.0
-    @Published var dubVolume = 1.15
+    @Published var dubVolume = 1.0
     @Published var backgroundDucking = false
 
     @Published var backendState: BackendConnectionState = .connecting
@@ -474,6 +484,10 @@ final class AppState: ObservableObject {
     }
 
     var quickStartProblem: String? {
+        if (try? parsedGlossary()) == nil { return "The project glossary must be a JSON object of text terms." }
+        if translationProvider == .cloud && (!cloudConsent || !cloudEndpoint.hasPrefix("https://") || cloudModel.isEmpty) {
+            return "Cloud translation needs an HTTPS endpoint, model and permission to send dialogue."
+        }
         if let issue = projectNameProblem() { return issue }
         let input = source.trimmingCharacters(in: .whitespacesAndNewlines)
         if input.isEmpty { return "Choose a video file or paste a video page link." }
@@ -575,6 +589,8 @@ final class AppState: ObservableObject {
             ],
             "translation": [
                 "provider": translationProvider.rawValue,
+                "endpoint": cloudEndpoint, "cloud_model": cloudModel,
+                "api_key": cloudAPIKey, "consent": cloudConsent,
                 "llm_model": llmModel,
                 "ollama_url": ollamaURL,
                 "model": ollamaModel,
@@ -606,6 +622,8 @@ final class AppState: ObservableObject {
                 "dub_volume": dubVolume,
                 "ducking": backgroundDucking,
             ],
+            "glossary": (try? parsedGlossary()) ?? [:],
+            "asr_prompt": asrPrompt,
             "context": seriesContext,
             "resume": resumeCachedWork,
             "review_before_dub": reviewBeforeDub,
@@ -669,6 +687,7 @@ final class AppState: ObservableObject {
                 "project_id": project.id,
                 "dub_id": dub.id,
                 "elevenlabs_api_key": elevenLabsAPIKey,
+                "cloud_translation_api_key": cloudAPIKey,
             ], id: "resume-\(UUID().uuidString)")
             selection = .overview
         } catch {
@@ -736,9 +755,11 @@ final class AppState: ObservableObject {
         }
         jobIssue = ""
         do {
+            let glossary = try parsedGlossary()
             _ = try backend.send(method: "update_project", params: [
                 "project_id": project.id, "output_dir": project.outputDir,
                 "name": projectName, "series_id": seriesID,
+                "context": seriesContext, "glossary": glossary, "asr_prompt": asrPrompt,
             ], id: "update-project-\(UUID().uuidString)")
         } catch { statusText = error.localizedDescription }
     }
@@ -755,6 +776,9 @@ final class AppState: ObservableObject {
         source = project.source
         outputFolder = project.outputDir
         seriesID = project.seriesID
+        seriesContext = project.context
+        asrPrompt = project.asrPrompt
+        projectGlossary = String(data: (try? JSONEncoder().encode(project.glossary)) ?? Data("{}".utf8), encoding: .utf8) ?? "{}"
         projectName = project.name
         selection = keepDestination ?? .overview
         refreshCharacterMaps()
@@ -768,6 +792,8 @@ final class AppState: ObservableObject {
         versionVoiceOverrides = [:]
         seriesID = ""
         seriesContext = ""
+        projectGlossary = "{}"
+        asrPrompt = ""
         jobIssue = ""
         resetSourceInspection()
         outputMode = .dub
@@ -795,6 +821,9 @@ final class AppState: ObservableObject {
         mlxWhisperModel = config["mlx_whisper_model"] as? String ?? mlxWhisperModel
         llmModel = config["llm_model"] as? String ?? llmModel
         reviewModel = config["review_model"] as? String ?? reviewModel
+        cloudEndpoint = config["cloud_translation_url"] as? String ?? ""
+        cloudModel = config["cloud_translation_model"] as? String ?? ""
+        cloudConsent = config["cloud_translation_consent"] as? Bool ?? false
         ollamaModel = config["ollama_model"] as? String ?? ollamaModel
         ollamaURL = config["ollama_url"] as? String ?? ollamaURL
         fallbackVoice = config["voice"] as? String ?? fallbackVoice

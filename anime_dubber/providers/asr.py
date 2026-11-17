@@ -65,6 +65,7 @@ def faster_whisper_segments(
         initial_prompt=initial_prompt,
         word_timestamps=True,
         vad_filter=True,
+        condition_on_previous_text=False,
     )
     if language_sink and getattr(info, "language", None):
         language_sink(str(info.language).lower())
