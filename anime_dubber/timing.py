@@ -99,7 +99,7 @@ class TimingResolver:
 
     def resolve(self, seg, index, profile, window):
         from dataclasses import replace
-        from .core import prepare_tts_clip, TimingOverlapError, CancelledError, PipelineError, _atomic_media_run
+        from .core import prepare_tts_clip, TimingOverlapError, CancelledError, PipelineError
         left, right = window
         original = seg.translated
         rejected = [original]
@@ -138,8 +138,8 @@ class TimingResolver:
         # The full translated subtitle remains; only this failed voice is silent.
         self.directory.mkdir(parents=True, exist_ok=True)
         silent = self.directory / f'{index:06d}_needs_review.wav'
-        _atomic_media_run(self.runner, ['ffmpeg','-y','-loglevel','error','-f','lavfi','-i',
-            'anullsrc=r=44100:cl=stereo','-t',str(max(.01,right-left)), '-c:a','pcm_s16le',str(silent)],silent)
+        from .audio_analysis import write_silence
+        write_silence(silent, max(.01,right-left), self.runner)
         report = {'cue':index+1,'source':seg.text,'original':original,'replacement':original,
                   'status':'needs_review','reason':'No intelligible fit within 1.5x; voice omitted',
                   'duration':issue.duration,'available':right-left,'repair_errors':failures}

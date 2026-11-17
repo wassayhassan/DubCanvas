@@ -803,8 +803,8 @@ def run_quality(config, progress, runner, *, analysis=False):
                 for i in failed:
                     available = max(.01, window(segments, i, duration, cuts, runtime_q))
                     silent = work / f"needs-review-{i:06d}.wav"
-                    _atomic_media_run(runner, ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
-                        "anullsrc=r=48000:cl=stereo", "-t", str(available), "-c:a", "pcm_f32le", str(silent)], silent)
+                    from .audio_analysis import write_silence
+                    write_silence(silent, available, runner, rate=48000)
                     clips[i] = silent
                     report.append({"cue": i+1, "status": "needs_review", "reason": "Voice omitted: no intelligible timing fit", "text": segments[i].translated})
                 _atomic_json_write(work / "timing-review.json", report)
