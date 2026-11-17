@@ -35,6 +35,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg rubberband-cli
 
+      - name: Install FFmpeg for macOS sync regression tests
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
       - name: Source preflight
         run: python verify_source.py
 
