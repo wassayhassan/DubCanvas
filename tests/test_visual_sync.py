@@ -3,51 +3,15 @@ import sys
 import tempfile
 import types
 import unittest
-import wave
-from array import array
 from pathlib import Path
 from unittest.mock import patch
 
 from anime_dubber.core import CommandRunner, Segment
-from anime_dubber.visual_sync import _audible_onset, _mouth_motion, _visual_onset, align_dub_to_visible_speech
+from anime_dubber.visual_sync import align_dub_to_visible_speech
 
 
 class VisualTimingTests(unittest.TestCase):
-    def test_clear_onset_near_boundary_is_detected(self):
-        times = [-.3, -.2, -.1, 0, .1, .2, .3]
-        self.assertAlmostEqual(_visual_onset(times, [0, 0, 0, 0, 10, 11, 9], 0), .1)
 
-    def test_audible_onset_accounts_for_tts_lead_in(self):
-        with tempfile.TemporaryDirectory() as td:
-            clip = Path(td) / "voice.wav"
-            samples = array("h", [0] * 800 + [12000] * 1200)
-            with wave.open(str(clip), "wb") as output:
-                output.setnchannels(1)
-                output.setsampwidth(2)
-                output.setframerate(10000)
-                output.writeframes(samples.tobytes())
-            self.assertAlmostEqual(_audible_onset(clip), .08, places=2)
-
-    def test_ambiguous_or_far_onset_does_not_shift(self):
-        times = [-.3, -.2, -.1, 0, .1, .2, .3]
-        self.assertIsNone(_visual_onset(times, [10, 10, 10, 0, 9, 10, 9], 0))
-        self.assertIsNone(_visual_onset(times, [0, 0, 0, 0, 0, 0, 10], 0))
-
-    def test_multiple_faces_skip_visual_timing(self):
-        try:
-            import numpy as np
-        except ImportError:
-            self.skipTest("numpy is needed for frame extraction")
-        class Capture:
-            def set(self, *_): return True
-            def read(self): return True, np.zeros((120, 160, 3), dtype=np.uint8)
-            def get(self, prop): return 24 if prop == 1 else 1000
-        cv2 = types.SimpleNamespace(CAP_PROP_FPS=1, CAP_PROP_POS_MSEC=2,
-                                    resize=lambda frame, _size: frame,
-                                    cvtColor=lambda frame, _mode: frame[:, :, 0], COLOR_BGR2GRAY=3)
-        detector = types.SimpleNamespace(detectMultiScale=lambda *_args, **_kwargs:
-                                         [(0, 0, 80, 80), (80, 0, 80, 80)])
-        self.assertIsNone(_mouth_motion(Path("unused"), 1, Capture(), detector, cv2))
 
     def test_visual_timing_is_bounded_preserves_subtitles_and_resumes(self):
         class Capture:

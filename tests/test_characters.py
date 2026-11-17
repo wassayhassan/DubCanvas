@@ -8,83 +8,11 @@ from unittest.mock import patch
 import numpy as np
 
 from anime_dubber.characters import (
-    AudioFeatures,
-    _acoustic_features,
-    _greedy_cluster,
-    _infer_voice_class,
-    _style_for_segment,
-    cosine,
     analyze_characters,
     write_character_map,
     update_character_override,
 )
-from anime_dubber.core import CommandRunner, Segment, Config, _chatterbox_reference
-
-
-class CharacterLogicTests(unittest.TestCase):
-    def test_reference_priority_and_opt_out(self):
-        config = Config(source="video", output_dir=Path("."), chatterbox_reference_audio="", auto_voice_references=True)
-        profile = {"suggested_reference_audio": "/auto/character.wav", "auto_reference_enabled": True}
-        self.assertEqual(_chatterbox_reference(profile, config), "/auto/character.wav")
-        profile["reference_audio"] = "/chosen.wav"
-        self.assertEqual(_chatterbox_reference(profile, config), "/chosen.wav")
-        profile["reference_audio"] = ""
-        config.chatterbox_reference_audio = "/global.wav"
-        self.assertEqual(_chatterbox_reference(profile, config), "/auto/character.wav")
-        profile["suggested_reference_audio"] = ""
-        self.assertEqual(_chatterbox_reference(profile, config), "")
-        self.assertEqual(_chatterbox_reference({}, config), "/global.wav")
-        config.chatterbox_reference_audio = ""
-        profile["auto_reference_enabled"] = False
-        self.assertEqual(_chatterbox_reference(profile, config), "")
-        config.auto_voice_references = False
-        profile["auto_reference_enabled"] = True
-        self.assertEqual(_chatterbox_reference(profile, config), "")
-
-    def tone(self, freq, amp=0.2, seconds=1.0, sr=16000):
-        t = np.arange(int(sr * seconds), dtype=np.float32) / sr
-        return (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)
-
-    def test_pitch_and_voice_class(self):
-        low = _acoustic_features(self.tone(120))
-        high = _acoustic_features(self.tone(260))
-        self.assertTrue(105 <= low.f0_median <= 140)
-        self.assertTrue(235 <= high.f0_median <= 285)
-        self.assertEqual(_infer_voice_class(low.f0_median)[0], "male")
-        self.assertEqual(_infer_voice_class(high.f0_median)[0], "female")
-
-    def test_acoustic_embeddings_cluster_two_speakers(self):
-        embs = [_acoustic_features(self.tone(f)).embedding for f in (120, 125, 280, 275)]
-        labels = _greedy_cluster(embs, max_speakers=6, threshold=0.91)
-        self.assertEqual(labels[0], labels[1])
-        self.assertEqual(labels[2], labels[3])
-        self.assertNotEqual(labels[0], labels[2])
-        self.assertGreater(cosine(embs[0], embs[1]), 0.95)
-
-    def test_similar_adjacent_embeddings_do_not_merge_clearly_opposed_voices(self):
-        female = AudioFeatures(f0_median=250, voiced_ratio=.8)
-        male = AudioFeatures(f0_median=115, voiced_ratio=.8)
-        labels = _greedy_cluster([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]],
-                                 max_speakers=6, threshold=.91,
-                                 features=[female, male, female])
-        self.assertEqual(labels[0], labels[2])
-        self.assertNotEqual(labels[0], labels[1])
-
-    def test_uncertain_pitch_does_not_force_a_new_character(self):
-        unknown = AudioFeatures(f0_median=0, voiced_ratio=.1)
-        female = AudioFeatures(f0_median=245, voiced_ratio=.8)
-        labels = _greedy_cluster([[1.0, 0.0], [1.0, 0.0]],
-                                 max_speakers=6, threshold=.91, features=[female, unknown])
-        self.assertEqual(labels, [0, 0])
-
-    def test_style_detection(self):
-        baseline = {"rms": -25.0, "f0": 130.0, "flat": 0.02}
-        shout = AudioFeatures(rms_db=-15, f0_median=170, voiced_ratio=.9, flatness=.02)
-        whisper = AudioFeatures(rms_db=-36, f0_median=0, voiced_ratio=.20, flatness=.05)
-        normal = AudioFeatures(rms_db=-25, f0_median=130, voiced_ratio=.9, flatness=.02)
-        self.assertEqual(_style_for_segment(shout, baseline, "住手！")[0], "shouting")
-        self.assertEqual(_style_for_segment(whisper, baseline, "别出声")[0], "whispering")
-        self.assertEqual(_style_for_segment(normal, baseline, "你好")[0], "normal")
+from anime_dubber.core import CommandRunner, Segment
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required")

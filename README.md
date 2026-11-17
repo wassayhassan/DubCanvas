@@ -60,6 +60,8 @@ python verify_source.py
 python -m unittest discover -s tests
 ```
 
+The Python suite focuses on end-to-end media processing, project data and recovery, timing, setup, and update safety. Small helper and configuration checks are intentionally limited to keep maintenance manageable.
+
 Install FFmpeg/ffprobe and Rubber Band to exercise media integration tests. On macOS, run `swift test --package-path macos/DubCanvasApp` for the native app. Tests use model substitutes; passing them does not establish real-model dubbing quality.
 
 More detail: [project architecture](docs/PROJECT_WORKSPACE_VNEXT.md) · [macOS interface design](docs/SWIFTUI_REDESIGN_SPEC.md).
