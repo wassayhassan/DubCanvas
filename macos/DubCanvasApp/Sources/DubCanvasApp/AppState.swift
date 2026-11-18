@@ -556,6 +556,10 @@ final class AppState: ObservableObject {
 
     func startJob(analysis: Bool) {
         guard canStartJob, let project = currentProject else { return }
+        guard let glossary = try? parsedGlossary() else {
+            jobIssue = "The project glossary must be a JSON object of text terms."
+            return
+        }
 
         jobStartPending = true
         awaitingDubJob = !analysis && outputMode == .dub
@@ -622,7 +626,7 @@ final class AppState: ObservableObject {
                 "dub_volume": dubVolume,
                 "ducking": backgroundDucking,
             ],
-            "glossary": (try? parsedGlossary()) ?? [:],
+            "glossary": glossary,
             "asr_prompt": asrPrompt,
             "context": seriesContext,
             "resume": resumeCachedWork,

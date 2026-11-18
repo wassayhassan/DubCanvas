@@ -195,3 +195,28 @@ def blend_background(
     finally:
         temp.unlink(missing_ok=True)
     return destination
+
+
+def write_silence(destination, seconds, runner, *, rate=44100):
+    """Write an atomic PCM placeholder in bounded blocks, without an encoder."""
+    import wave
+
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".partial.wav")
+    try:
+        with wave.open(str(temporary), "wb") as output:
+            output.setnchannels(2)
+            output.setsampwidth(2)
+            output.setframerate(rate)
+            remaining = max(1, round(seconds * rate))
+            block = b"\0" * (rate * 4)
+            while remaining:
+                runner.check_cancel()
+                frames = min(rate, remaining)
+                output.writeframes(block[: frames * 4])
+                remaining -= frames
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination

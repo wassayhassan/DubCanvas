@@ -159,6 +159,8 @@ class ApplicationServiceTests(unittest.TestCase):
         })
         normalized = service._normalized_config_dict(cfg)
         self.assertEqual(normalized["elevenlabs_api_key"], "<redacted>")
+        cfg.cloud_translation_api_key = "cloud-secret"
+        self.assertEqual(service._normalized_config_dict(cfg)["cloud_translation_api_key"], "<redacted>")
 
 
 if __name__ == "__main__":
